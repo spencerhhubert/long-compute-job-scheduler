@@ -1,40 +1,51 @@
 // Package httpapi exposes the control-plane domain through a versioned JSON
-// API.
+// API and a compact operator console.
 package httpapi
 
 import (
 	"context"
+	"crypto/rand"
 	"crypto/sha256"
 	"crypto/subtle"
+	"encoding/base64"
 	"encoding/json"
 	"errors"
 	"io"
 	"net/http"
 	"strconv"
 	"strings"
+	"time"
 
 	"github.com/spencerhhubert/long-compute-job-scheduler/internal/domain"
 	"github.com/spencerhhubert/long-compute-job-scheduler/internal/id"
 	sqlitestore "github.com/spencerhhubert/long-compute-job-scheduler/internal/store/sqlite"
 )
 
-const maxRequestBody = 1 << 20
+const (
+	maxRequestBody = 1 << 20
+	sessionCookie  = "lcjs_session"
+	sessionLife    = 90 * 24 * time.Hour
+)
 
-type JobStore interface {
+type Store interface {
 	CreateJob(context.Context, string, domain.JobSpec) (sqlitestore.CreateJobResult, error)
 	GetJob(context.Context, string) (domain.Job, error)
 	ListJobs(context.Context, int) ([]domain.Job, error)
+	AuthenticateAPIToken(context.Context, string) (sqlitestore.APIToken, error)
+	CreateBrowserSession(context.Context, string, string, time.Time) error
+	AuthenticateBrowserSession(context.Context, string) (sqlitestore.BrowserSession, error)
+	DeleteBrowserSession(context.Context, string) error
 }
 
 type Server struct {
-	store     JobStore
+	store     Store
 	tokenHash [32]byte
 	handler   http.Handler
 }
 
-func New(store JobStore, bootstrapToken string) (*Server, error) {
+func New(store Store, bootstrapToken string) (*Server, error) {
 	if store == nil {
-		return nil, errors.New("job store is required")
+		return nil, errors.New("store is required")
 	}
 	if len(bootstrapToken) < 32 {
 		return nil, errors.New("bootstrap token must be at least 32 characters")
@@ -43,10 +54,15 @@ func New(store JobStore, bootstrapToken string) (*Server, error) {
 
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET /{$}", s.home)
+	mux.HandleFunc("GET /login", s.loginPage)
+	mux.HandleFunc("POST /login", s.login)
+	mux.HandleFunc("POST /logout", s.logout)
+	mux.HandleFunc("GET /static/app.css", serveStyles)
+	mux.HandleFunc("GET /static/theme.js", serveThemeScript)
 	mux.HandleFunc("GET /healthz", s.health)
-	mux.Handle("POST /api/v1/jobs", s.authenticate(http.HandlerFunc(s.createJob)))
-	mux.Handle("GET /api/v1/jobs", s.authenticate(http.HandlerFunc(s.listJobs)))
-	mux.Handle("GET /api/v1/jobs/{id}", s.authenticate(http.HandlerFunc(s.getJob)))
+	mux.Handle("POST /api/v1/jobs", s.authenticateAPI(http.HandlerFunc(s.createJob)))
+	mux.Handle("GET /api/v1/jobs", s.authenticateAPI(http.HandlerFunc(s.listJobs)))
+	mux.Handle("GET /api/v1/jobs/{id}", s.authenticateAPI(http.HandlerFunc(s.getJob)))
 	s.handler = mux
 	return s, nil
 }
@@ -59,7 +75,7 @@ func (s *Server) ServeHTTP(response http.ResponseWriter, request *http.Request) 
 	s.handler.ServeHTTP(response, request)
 }
 
-func (s *Server) authenticate(next http.Handler) http.Handler {
+func (s *Server) authenticateAPI(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(response http.ResponseWriter, request *http.Request) {
 		const prefix = "Bearer "
 		header := request.Header.Get("Authorization")
@@ -67,56 +83,126 @@ func (s *Server) authenticate(next http.Handler) http.Handler {
 			writeError(response, http.StatusUnauthorized, "unauthorized", "a bearer token is required")
 			return
 		}
-		provided := sha256.Sum256([]byte(strings.TrimPrefix(header, prefix)))
+		rawToken := strings.TrimPrefix(header, prefix)
+		provided := sha256.Sum256([]byte(rawToken))
 		if subtle.ConstantTimeCompare(provided[:], s.tokenHash[:]) != 1 {
-			writeError(response, http.StatusUnauthorized, "unauthorized", "the bearer token is invalid")
-			return
+			_, err := s.store.AuthenticateAPIToken(request.Context(), rawToken)
+			if errors.Is(err, sqlitestore.ErrNotFound) {
+				writeError(response, http.StatusUnauthorized, "unauthorized", "the bearer token is invalid")
+				return
+			}
+			if err != nil {
+				writeError(response, http.StatusInternalServerError, "internal", "authentication is temporarily unavailable")
+				return
+			}
 		}
 		next.ServeHTTP(response, request)
 	})
 }
 
-func (s *Server) home(response http.ResponseWriter, _ *http.Request) {
-	response.Header().Set("Content-Type", "text/html; charset=utf-8")
-	response.Header().Set("Cache-Control", "no-store")
-	response.WriteHeader(http.StatusOK)
-	_, _ = io.WriteString(response, homePage)
+func (s *Server) home(response http.ResponseWriter, request *http.Request) {
+	session, _, err := s.browserSession(request)
+	if errors.Is(err, sqlitestore.ErrNotFound) {
+		http.Redirect(response, request, "/login", http.StatusSeeOther)
+		return
+	}
+	if err != nil {
+		http.Error(response, "the console is temporarily unavailable", http.StatusInternalServerError)
+		return
+	}
+	jobs, err := s.store.ListJobs(request.Context(), 1000)
+	if err != nil {
+		http.Error(response, "the console is temporarily unavailable", http.StatusInternalServerError)
+		return
+	}
+	data := dashboardView{TokenName: session.TokenName, Jobs: jobs}
+	for _, job := range jobs {
+		switch job.State {
+		case domain.JobQueued, domain.JobRetryWait:
+			data.Queued++
+		case domain.JobRunning, domain.JobCanceling:
+			data.Active++
+		case domain.JobFailed:
+			data.Failed++
+		case domain.JobSucceeded:
+			data.Succeeded++
+		}
+	}
+	renderPage(response, dashboardTemplate, data)
+}
+
+func (s *Server) loginPage(response http.ResponseWriter, request *http.Request) {
+	if _, _, err := s.browserSession(request); err == nil {
+		http.Redirect(response, request, "/", http.StatusSeeOther)
+		return
+	} else if !errors.Is(err, sqlitestore.ErrNotFound) {
+		http.Error(response, "login is temporarily unavailable", http.StatusInternalServerError)
+		return
+	}
+	renderPage(response, loginTemplate, loginView{})
+}
+
+func (s *Server) login(response http.ResponseWriter, request *http.Request) {
+	request.Body = http.MaxBytesReader(response, request.Body, 16<<10)
+	if err := request.ParseForm(); err != nil {
+		renderPageStatus(response, loginTemplate, loginView{Error: "That key could not be used."}, http.StatusBadRequest)
+		return
+	}
+	rawToken := strings.TrimSpace(request.PostForm.Get("key"))
+	token, err := s.store.AuthenticateAPIToken(request.Context(), rawToken)
+	if errors.Is(err, sqlitestore.ErrNotFound) {
+		renderPageStatus(response, loginTemplate, loginView{Error: "That key is not valid."}, http.StatusUnauthorized)
+		return
+	}
+	if err != nil {
+		http.Error(response, "login is temporarily unavailable", http.StatusInternalServerError)
+		return
+	}
+	rawSession, err := randomSecret("lcss_")
+	if err != nil {
+		http.Error(response, "login is temporarily unavailable", http.StatusInternalServerError)
+		return
+	}
+	expiresAt := time.Now().UTC().Add(sessionLife)
+	if err := s.store.CreateBrowserSession(request.Context(), token.ID, rawSession, expiresAt); err != nil {
+		http.Error(response, "login is temporarily unavailable", http.StatusInternalServerError)
+		return
+	}
+	http.SetCookie(response, &http.Cookie{
+		Name: sessionCookie, Value: rawSession, Path: "/", Expires: expiresAt,
+		MaxAge: int(sessionLife.Seconds()), Secure: true, HttpOnly: true,
+		SameSite: http.SameSiteStrictMode,
+	})
+	http.Redirect(response, request, "/", http.StatusSeeOther)
+}
+
+func (s *Server) logout(response http.ResponseWriter, request *http.Request) {
+	if cookie, err := request.Cookie(sessionCookie); err == nil {
+		_ = s.store.DeleteBrowserSession(request.Context(), cookie.Value)
+	}
+	http.SetCookie(response, &http.Cookie{
+		Name: sessionCookie, Value: "", Path: "/", MaxAge: -1,
+		Expires: time.Unix(1, 0), Secure: true, HttpOnly: true,
+		SameSite: http.SameSiteStrictMode,
+	})
+	http.Redirect(response, request, "/login", http.StatusSeeOther)
+}
+
+func (s *Server) browserSession(request *http.Request) (sqlitestore.BrowserSession, string, error) {
+	cookie, err := request.Cookie(sessionCookie)
+	if errors.Is(err, http.ErrNoCookie) || cookie.Value == "" {
+		return sqlitestore.BrowserSession{}, "", sqlitestore.ErrNotFound
+	}
+	if err != nil {
+		return sqlitestore.BrowserSession{}, "", err
+	}
+	session, err := s.store.AuthenticateBrowserSession(request.Context(), cookie.Value)
+	return session, cookie.Value, err
 }
 
 func (s *Server) health(response http.ResponseWriter, _ *http.Request) {
 	writeJSON(response, http.StatusOK, map[string]string{"status": "ok"})
 }
-
-const homePage = `<!doctype html>
-<html lang="en">
-<head>
-  <meta charset="utf-8">
-  <meta name="viewport" content="width=device-width, initial-scale=1">
-  <meta name="color-scheme" content="dark">
-  <title>Long Compute Job Scheduler</title>
-  <style>
-    :root { color-scheme: dark; font-family: ui-sans-serif, system-ui, sans-serif; }
-    * { box-sizing: border-box; }
-    body { margin: 0; min-height: 100vh; display: grid; place-items: center; background: #090b10; color: #eef1f6; }
-    main { width: min(42rem, calc(100% - 2rem)); padding: 2.5rem; border: 1px solid #262b36; border-radius: 1.25rem; background: #11141b; box-shadow: 0 1.5rem 4rem #0008; }
-    .status { display: inline-flex; align-items: center; gap: .55rem; color: #9ee6b4; font-size: .8rem; font-weight: 650; letter-spacing: .08em; text-transform: uppercase; }
-    .status::before { content: ""; width: .6rem; height: .6rem; border-radius: 50%; background: #4ade80; box-shadow: 0 0 1rem #4ade8088; }
-    h1 { margin: 1rem 0 .75rem; font-size: clamp(2rem, 7vw, 3.6rem); line-height: 1; letter-spacing: -.055em; }
-    p { margin: 0; max-width: 34rem; color: #a8afbd; font-size: 1.05rem; line-height: 1.65; }
-    footer { margin-top: 2.25rem; padding-top: 1.25rem; border-top: 1px solid #262b36; color: #71798a; font-size: .85rem; }
-    a { color: #cbd5e1; text-underline-offset: .2em; }
-  </style>
-</head>
-<body>
-  <main>
-    <div class="status">Control plane online</div>
-    <h1>Long Compute<br>Job Scheduler</h1>
-    <p>A durable control plane for heterogeneous, long-running compute jobs. The authenticated job dashboard and worker fleet are the next implementation slice.</p>
-    <footer>Pre-alpha · <a href="https://github.com/spencerhhubert/long-compute-job-scheduler">Source on GitHub</a></footer>
-  </main>
-</body>
-</html>
-`
 
 func (s *Server) createJob(response http.ResponseWriter, request *http.Request) {
 	key := strings.TrimSpace(request.Header.Get("Idempotency-Key"))
@@ -187,6 +273,14 @@ func (s *Server) listJobs(response http.ResponseWriter, request *http.Request) {
 		return
 	}
 	writeJSON(response, http.StatusOK, map[string]any{"jobs": jobs})
+}
+
+func randomSecret(prefix string) (string, error) {
+	random := make([]byte, 32)
+	if _, err := rand.Read(random); err != nil {
+		return "", err
+	}
+	return prefix + base64.RawURLEncoding.EncodeToString(random), nil
 }
 
 func writeJSON(response http.ResponseWriter, status int, value any) {

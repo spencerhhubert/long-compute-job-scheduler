@@ -6,12 +6,12 @@ generation, temporary cloud workers, intermittent connectivity, and jobs whose
 useful output may be much larger than the control-plane host.
 
 The project is currently pre-alpha. The first vertical slice provides durable,
-idempotent job submission and authenticated central reads. Worker execution,
-scoped tokens, and the dashboard remain on the roadmap.
+idempotent job submission, hashed operator tokens, persistent browser sessions,
+authenticated central reads, and a compact operational dashboard. Worker
+execution remains on the roadmap.
 
-The public status page is available at
-[compute-jobs.spencerhubert.info](https://compute-jobs.spencerhubert.info). Job
-data and API operations remain authenticated.
+The authenticated console is available at
+[compute-jobs.spencerhubert.info](https://compute-jobs.spencerhubert.info).
 
 ## Shape of the system
 
@@ -39,9 +39,19 @@ export LCJS_BOOTSTRAP_TOKEN="$(bin/lcjs token)"
 bin/lcjs server --listen 127.0.0.1:8080 --db data/control.db
 ```
 
-The bootstrap token is the temporary pre-alpha operator credential. The server
-binds to loopback by default; do not expose it publicly until the scoped token
-and HTTPS deployment slices are complete.
+In another shell, create an operator key and enter the value printed once at
+`/login`:
+
+```sh
+bin/lcjs token create --db data/control.db --name primary-browser
+```
+
+The server stores only a SHA-256 hash of the operator key. A successful browser
+login exchanges it for a random, server-side session and sets a 90-day Secure,
+HttpOnly, SameSite=Strict cookie. The same key is accepted as an API bearer
+token. The bootstrap token remains available for initial provisioning and
+recovery. The server binds to loopback by default; terminate TLS in front of it
+before exposing it publicly.
 
 Run the full local check with:
 

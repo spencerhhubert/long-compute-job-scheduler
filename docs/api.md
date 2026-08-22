@@ -8,8 +8,9 @@ opaque string IDs, byte counts as integers, and durations as strings such as
 
 ## Conventions
 
-- `Authorization: Bearer <token>` authenticates every endpoint except
-  `/healthz`.
+- `Authorization: Bearer <token>` authenticates every JSON endpoint except
+  `/healthz`. The browser console exchanges an operator token at `/login` for a
+  persistent opaque session cookie; the raw token is not stored in the browser.
 - Mutating client requests accept an `Idempotency-Key` header.
 - List endpoints use opaque cursor pagination.
 - Errors use a stable machine-readable code:

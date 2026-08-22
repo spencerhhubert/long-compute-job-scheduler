@@ -194,6 +194,9 @@ those systems to the worker.
 - HTTPS is mandatory outside loopback development.
 - API tokens contain at least 256 bits of randomness and are shown once. Only a
   cryptographic hash is stored.
+- Browser login exchanges an operator token for a separate 256-bit session
+  secret. Only its hash is persisted; the browser receives a Secure, HttpOnly,
+  SameSite=Strict cookie with a bounded lifetime.
 - Tokens have a subject, scopes, optional worker binding, expiry, and revocation
   time.
 - A short-lived enrollment token may create exactly one worker credential.

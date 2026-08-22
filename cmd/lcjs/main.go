@@ -35,7 +35,7 @@ func run(arguments []string) error {
 	case "server":
 		return runServer(arguments[1:])
 	case "token":
-		return generateToken(arguments[1:])
+		return runToken(arguments[1:])
 	case "version":
 		fmt.Println(version)
 		return nil
@@ -97,14 +97,50 @@ func runServer(arguments []string) error {
 	}
 }
 
-func generateToken(arguments []string) error {
-	if len(arguments) != 0 {
-		return errors.New("usage: lcjs token")
+func runToken(arguments []string) error {
+	if len(arguments) == 0 {
+		token, err := generateSecret("")
+		if err != nil {
+			return err
+		}
+		fmt.Println(token)
+		return nil
 	}
+	if arguments[0] != "create" {
+		return errors.New("usage: lcjs token [create --db PATH --name NAME]")
+	}
+	flags := flag.NewFlagSet("token create", flag.ContinueOnError)
+	database := flags.String("db", "data/control.db", "SQLite database path")
+	name := flags.String("name", "browser", "operator token name")
+	if err := flags.Parse(arguments[1:]); err != nil {
+		return err
+	}
+	if flags.NArg() != 0 {
+		return errors.New("usage: lcjs token create [--db PATH] [--name NAME]")
+	}
+	rawToken, err := generateSecret("lcjs_")
+	if err != nil {
+		return err
+	}
+	ctx := context.Background()
+	store, err := sqlitestore.Open(ctx, *database)
+	if err != nil {
+		return err
+	}
+	defer store.Close()
+	if _, err := store.CreateAPIToken(ctx, *name, rawToken); err != nil {
+		return err
+	}
+	// The raw token is intentionally returned exactly once. SQLite stores only
+	// its SHA-256 hash.
+	fmt.Println(rawToken)
+	return nil
+}
+
+func generateSecret(prefix string) (string, error) {
 	random := make([]byte, 32)
 	if _, err := rand.Read(random); err != nil {
-		return fmt.Errorf("generate token: %w", err)
+		return "", fmt.Errorf("generate token: %w", err)
 	}
-	fmt.Println(base64.RawURLEncoding.EncodeToString(random))
-	return nil
+	return prefix + base64.RawURLEncoding.EncodeToString(random), nil
 }

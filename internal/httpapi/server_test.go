@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"net/url"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -16,7 +17,7 @@ import (
 
 const testToken = "0123456789abcdef0123456789abcdef"
 
-func TestHomeIsPublicAndContainsNoJobData(t *testing.T) {
+func TestConsoleLoginPersistsSecureSessionAndShowsJobState(t *testing.T) {
 	store, err := sqlitestore.Open(context.Background(), filepath.Join(t.TempDir(), "control.db"))
 	if err != nil {
 		t.Fatal(err)
@@ -30,14 +31,100 @@ func TestHomeIsPublicAndContainsNoJobData(t *testing.T) {
 	request := httptest.NewRequest(http.MethodGet, "/", nil)
 	response := httptest.NewRecorder()
 	server.ServeHTTP(response, request)
-	if response.Code != http.StatusOK {
-		t.Fatalf("status = %d", response.Code)
+	if response.Code != http.StatusSeeOther || response.Header().Get("Location") != "/login" {
+		t.Fatalf("unauthenticated response = %d, location = %q", response.Code, response.Header().Get("Location"))
 	}
-	if contentType := response.Header().Get("Content-Type"); contentType != "text/html; charset=utf-8" {
+
+	loginPageRequest := httptest.NewRequest(http.MethodGet, "/login", nil)
+	loginPageResponse := httptest.NewRecorder()
+	server.ServeHTTP(loginPageResponse, loginPageRequest)
+	if loginPageResponse.Code != http.StatusOK {
+		t.Fatalf("login page status = %d", loginPageResponse.Code)
+	}
+	if body := loginPageResponse.Body.String(); !strings.Contains(body, "Operator sign in") || !strings.Contains(body, `data-theme="light"`) {
+		t.Fatalf("login page = %q", body)
+	}
+
+	const operatorKey = "lcjs_0123456789abcdef0123456789abcdef0123456789abc"
+	if _, err := store.CreateAPIToken(context.Background(), "test browser", operatorKey); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.CreateJob(context.Background(), "dashboard-job", testJobSpec()); err != nil {
+		t.Fatal(err)
+	}
+	form := url.Values{"key": {operatorKey}}.Encode()
+	loginRequest := httptest.NewRequest(http.MethodPost, "/login", strings.NewReader(form))
+	loginRequest.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	loginResponse := httptest.NewRecorder()
+	server.ServeHTTP(loginResponse, loginRequest)
+	if loginResponse.Code != http.StatusSeeOther || loginResponse.Header().Get("Location") != "/" {
+		t.Fatalf("login response = %d, location = %q", loginResponse.Code, loginResponse.Header().Get("Location"))
+	}
+	cookies := loginResponse.Result().Cookies()
+	if len(cookies) != 1 {
+		t.Fatalf("login cookies = %d, want 1", len(cookies))
+	}
+	cookie := cookies[0]
+	if cookie.Name != sessionCookie || !cookie.Secure || !cookie.HttpOnly || cookie.SameSite != http.SameSiteStrictMode || cookie.MaxAge <= 0 {
+		t.Fatalf("session cookie = %+v", cookie)
+	}
+
+	dashboardRequest := httptest.NewRequest(http.MethodGet, "/", nil)
+	dashboardRequest.AddCookie(cookie)
+	dashboardResponse := httptest.NewRecorder()
+	server.ServeHTTP(dashboardResponse, dashboardRequest)
+	if dashboardResponse.Code != http.StatusOK {
+		t.Fatalf("status = %d", dashboardResponse.Code)
+	}
+	if contentType := dashboardResponse.Header().Get("Content-Type"); contentType != "text/html; charset=utf-8" {
 		t.Fatalf("Content-Type = %q", contentType)
 	}
-	if !strings.Contains(response.Body.String(), "Control plane online") {
-		t.Fatalf("home page = %q", response.Body.String())
+	if policy := dashboardResponse.Header().Get("Content-Security-Policy"); !strings.Contains(policy, "default-src 'none'") {
+		t.Fatalf("Content-Security-Policy = %q", policy)
+	}
+	body := dashboardResponse.Body.String()
+	for _, expected := range []string{"Control plane online", "train-baseline", "example-research", "No workers enrolled", "test browser"} {
+		if !strings.Contains(body, expected) {
+			t.Fatalf("dashboard does not contain %q: %s", expected, body)
+		}
+	}
+	if strings.Contains(body, "Long Compute Job Scheduler") {
+		t.Fatal("dashboard still contains the old landing-page title")
+	}
+
+	logoutRequest := httptest.NewRequest(http.MethodPost, "/logout", nil)
+	logoutRequest.AddCookie(cookie)
+	logoutResponse := httptest.NewRecorder()
+	server.ServeHTTP(logoutResponse, logoutRequest)
+	if logoutResponse.Code != http.StatusSeeOther {
+		t.Fatalf("logout status = %d", logoutResponse.Code)
+	}
+	afterLogout := httptest.NewRequest(http.MethodGet, "/", nil)
+	afterLogout.AddCookie(cookie)
+	afterLogoutResponse := httptest.NewRecorder()
+	server.ServeHTTP(afterLogoutResponse, afterLogout)
+	if afterLogoutResponse.Code != http.StatusSeeOther {
+		t.Fatalf("status after logout = %d", afterLogoutResponse.Code)
+	}
+}
+
+func TestLoginRejectsInvalidKey(t *testing.T) {
+	store, err := sqlitestore.Open(context.Background(), filepath.Join(t.TempDir(), "control.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer store.Close()
+	server, err := New(store, testToken)
+	if err != nil {
+		t.Fatal(err)
+	}
+	form := url.Values{"key": {"not-a-valid-key"}}.Encode()
+	request := httptest.NewRequest(http.MethodPost, "/login", strings.NewReader(form))
+	request.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	response := httptest.NewRecorder()
+	server.ServeHTTP(response, request)
+	if response.Code != http.StatusUnauthorized || !strings.Contains(response.Body.String(), "That key is not valid") {
+		t.Fatalf("invalid login response = %d: %s", response.Code, response.Body.String())
 	}
 }
 
@@ -93,5 +180,30 @@ func TestJobsRequireAuthenticationAndCreateIdempotently(t *testing.T) {
 		} else if job.ID != createdID {
 			t.Fatalf("replayed ID = %s, want %s", job.ID, createdID)
 		}
+	}
+
+	const databaseToken = "lcjs_fedcba9876543210fedcba9876543210fedcba987654"
+	if _, err := store.CreateAPIToken(context.Background(), "api test", databaseToken); err != nil {
+		t.Fatal(err)
+	}
+	databaseTokenRequest := httptest.NewRequest(http.MethodGet, "/api/v1/jobs", nil)
+	databaseTokenRequest.Header.Set("Authorization", "Bearer "+databaseToken)
+	databaseTokenResponse := httptest.NewRecorder()
+	server.ServeHTTP(databaseTokenResponse, databaseTokenRequest)
+	if databaseTokenResponse.Code != http.StatusOK {
+		t.Fatalf("database token status = %d: %s", databaseTokenResponse.Code, databaseTokenResponse.Body.String())
+	}
+}
+
+func testJobSpec() domain.JobSpec {
+	return domain.JobSpec{
+		Project: "example-research",
+		Name:    "train-baseline",
+		Source: domain.Source{
+			GitURL: "https://github.com/example/research.git",
+			Commit: strings.Repeat("a", 40),
+		},
+		Command: []string{"python", "train.py"},
+		Retry:   domain.RetryPolicy{MaxAttempts: 1, LostWorker: domain.LostWorkerManual},
 	}
 }
