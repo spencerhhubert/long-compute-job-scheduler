@@ -42,6 +42,7 @@ func New(store JobStore, bootstrapToken string) (*Server, error) {
 	s := &Server{store: store, tokenHash: sha256.Sum256([]byte(bootstrapToken))}
 
 	mux := http.NewServeMux()
+	mux.HandleFunc("GET /{$}", s.home)
 	mux.HandleFunc("GET /healthz", s.health)
 	mux.Handle("POST /api/v1/jobs", s.authenticate(http.HandlerFunc(s.createJob)))
 	mux.Handle("GET /api/v1/jobs", s.authenticate(http.HandlerFunc(s.listJobs)))
@@ -75,9 +76,47 @@ func (s *Server) authenticate(next http.Handler) http.Handler {
 	})
 }
 
+func (s *Server) home(response http.ResponseWriter, _ *http.Request) {
+	response.Header().Set("Content-Type", "text/html; charset=utf-8")
+	response.Header().Set("Cache-Control", "no-store")
+	response.WriteHeader(http.StatusOK)
+	_, _ = io.WriteString(response, homePage)
+}
+
 func (s *Server) health(response http.ResponseWriter, _ *http.Request) {
 	writeJSON(response, http.StatusOK, map[string]string{"status": "ok"})
 }
+
+const homePage = `<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="color-scheme" content="dark">
+  <title>Long Compute Job Scheduler</title>
+  <style>
+    :root { color-scheme: dark; font-family: ui-sans-serif, system-ui, sans-serif; }
+    * { box-sizing: border-box; }
+    body { margin: 0; min-height: 100vh; display: grid; place-items: center; background: #090b10; color: #eef1f6; }
+    main { width: min(42rem, calc(100% - 2rem)); padding: 2.5rem; border: 1px solid #262b36; border-radius: 1.25rem; background: #11141b; box-shadow: 0 1.5rem 4rem #0008; }
+    .status { display: inline-flex; align-items: center; gap: .55rem; color: #9ee6b4; font-size: .8rem; font-weight: 650; letter-spacing: .08em; text-transform: uppercase; }
+    .status::before { content: ""; width: .6rem; height: .6rem; border-radius: 50%; background: #4ade80; box-shadow: 0 0 1rem #4ade8088; }
+    h1 { margin: 1rem 0 .75rem; font-size: clamp(2rem, 7vw, 3.6rem); line-height: 1; letter-spacing: -.055em; }
+    p { margin: 0; max-width: 34rem; color: #a8afbd; font-size: 1.05rem; line-height: 1.65; }
+    footer { margin-top: 2.25rem; padding-top: 1.25rem; border-top: 1px solid #262b36; color: #71798a; font-size: .85rem; }
+    a { color: #cbd5e1; text-underline-offset: .2em; }
+  </style>
+</head>
+<body>
+  <main>
+    <div class="status">Control plane online</div>
+    <h1>Long Compute<br>Job Scheduler</h1>
+    <p>A durable control plane for heterogeneous, long-running compute jobs. The authenticated job dashboard and worker fleet are the next implementation slice.</p>
+    <footer>Pre-alpha · <a href="https://github.com/spencerhhubert/long-compute-job-scheduler">Source on GitHub</a></footer>
+  </main>
+</body>
+</html>
+`
 
 func (s *Server) createJob(response http.ResponseWriter, request *http.Request) {
 	key := strings.TrimSpace(request.Header.Get("Idempotency-Key"))

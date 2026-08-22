@@ -9,6 +9,10 @@ The project is currently pre-alpha. The first vertical slice provides durable,
 idempotent job submission and authenticated central reads. Worker execution,
 scoped tokens, and the dashboard remain on the roadmap.
 
+The public status page is available at
+[compute-jobs.spencerhubert.info](https://compute-jobs.spencerhubert.info). Job
+data and API operations remain authenticated.
+
 ## Shape of the system
 
 - One Go binary provides a CLI, control-plane server, and worker agent.

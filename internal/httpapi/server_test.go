@@ -16,6 +16,31 @@ import (
 
 const testToken = "0123456789abcdef0123456789abcdef"
 
+func TestHomeIsPublicAndContainsNoJobData(t *testing.T) {
+	store, err := sqlitestore.Open(context.Background(), filepath.Join(t.TempDir(), "control.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer store.Close()
+	server, err := New(store, testToken)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	request := httptest.NewRequest(http.MethodGet, "/", nil)
+	response := httptest.NewRecorder()
+	server.ServeHTTP(response, request)
+	if response.Code != http.StatusOK {
+		t.Fatalf("status = %d", response.Code)
+	}
+	if contentType := response.Header().Get("Content-Type"); contentType != "text/html; charset=utf-8" {
+		t.Fatalf("Content-Type = %q", contentType)
+	}
+	if !strings.Contains(response.Body.String(), "Control plane online") {
+		t.Fatalf("home page = %q", response.Body.String())
+	}
+}
+
 func TestJobsRequireAuthenticationAndCreateIdempotently(t *testing.T) {
 	store, err := sqlitestore.Open(context.Background(), filepath.Join(t.TempDir(), "control.db"))
 	if err != nil {
