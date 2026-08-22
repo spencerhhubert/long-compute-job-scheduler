@@ -1,0 +1,27 @@
+# Local agent and machine notes
+AGENTS.local.md
+
+# Secrets and local configuration
+.env
+.env.*
+!.env.example
+*.pem
+*.key
+
+# Local state
+*.db
+*.db-shm
+*.db-wal
+*.sqlite
+*.sqlite-shm
+*.sqlite-wal
+data/
+artifacts/
+
+# Builds and editor files
+/bin/
+/dist/
+.DS_Store
+.idea/
+.vscode/
+*.swp
