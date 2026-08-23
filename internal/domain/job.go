@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"math"
+	"path/filepath"
 	"regexp"
 	"strings"
 	"time"
@@ -220,11 +221,15 @@ func (spec JobSpec) Validate() error {
 	if spec.Checkpoint != nil {
 		if strings.TrimSpace(spec.Checkpoint.Glob) == "" || len(spec.Checkpoint.ResumeCommand) == 0 {
 			errs = append(errs, errors.New("checkpoint requires a glob and resume_command"))
+		} else if unsafeRelativeGlob(spec.Checkpoint.Glob) {
+			errs = append(errs, errors.New("checkpoint glob must remain inside the job work directory"))
 		}
 	}
 	for i, artifact := range spec.Artifacts {
 		if !slugPattern.MatchString(artifact.Name) || strings.TrimSpace(artifact.Glob) == "" {
 			errs = append(errs, fmt.Errorf("artifacts[%d] requires a slug name and non-empty glob", i))
+		} else if unsafeRelativeGlob(artifact.Glob) {
+			errs = append(errs, fmt.Errorf("artifacts[%d].glob must remain inside the job work directory", i))
 		}
 	}
 	if len(spec.Metrics) > 64 {
@@ -293,4 +298,9 @@ func (spec JobSpec) Validate() error {
 	}
 
 	return errors.Join(errs...)
+}
+
+func unsafeRelativeGlob(pattern string) bool {
+	normalized := filepath.ToSlash(pattern)
+	return filepath.IsAbs(pattern) || normalized == ".." || strings.HasPrefix(normalized, "../") || strings.Contains(normalized, "/../")
 }

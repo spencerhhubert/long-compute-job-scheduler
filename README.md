@@ -33,7 +33,7 @@ The authenticated console is available at
 
 See [the architecture](docs/architecture.md), [API draft](docs/api.md),
 [metrics guide](docs/metrics.md), [verified requirements](docs/requirements.md),
-and [implementation roadmap](docs/roadmap.md).
+[worker setup](docs/worker.md), and [implementation roadmap](docs/roadmap.md).
 
 ## Development quick start
 

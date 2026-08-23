@@ -29,7 +29,8 @@ const (
 
 type Store interface {
 	CreateJob(context.Context, string, domain.JobSpec) (sqlitestore.CreateJobResult, error)
-	GetJob(context.Context, string) (domain.Job, error)
+	CancelJob(context.Context, string) (domain.Job, error)
+	GetJobDetail(context.Context, string) (domain.JobDetail, error)
 	ListJobs(context.Context, int) ([]domain.Job, error)
 	AuthenticateAPIToken(context.Context, string) (sqlitestore.APIToken, error)
 	CreateBrowserSession(context.Context, string, string, time.Time) error
@@ -66,6 +67,7 @@ func New(store Store, bootstrapToken string) (*Server, error) {
 	mux.Handle("POST /api/v1/jobs", s.authenticateAPI(http.HandlerFunc(s.createJob)))
 	mux.Handle("GET /api/v1/jobs", s.authenticateAPI(http.HandlerFunc(s.listJobs)))
 	mux.Handle("GET /api/v1/jobs/{id}", s.authenticateAPI(http.HandlerFunc(s.getJob)))
+	mux.Handle("POST /api/v1/jobs/{id}/cancel", s.authenticateAPI(http.HandlerFunc(s.cancelJob)))
 	mux.Handle("GET /api/v1/workers", s.authenticateAPI(http.HandlerFunc(s.listWorkers)))
 	mux.HandleFunc("POST /api/v1/worker/sync", s.workerSync)
 	s.handler = mux
@@ -250,13 +252,30 @@ func (s *Server) createJob(response http.ResponseWriter, request *http.Request) 
 }
 
 func (s *Server) getJob(response http.ResponseWriter, request *http.Request) {
-	job, err := s.store.GetJob(request.Context(), request.PathValue("id"))
+	detail, err := s.store.GetJobDetail(request.Context(), request.PathValue("id"))
 	if errors.Is(err, sqlitestore.ErrNotFound) {
 		writeError(response, http.StatusNotFound, "not_found", "job not found")
 		return
 	}
 	if err != nil {
 		writeError(response, http.StatusInternalServerError, "internal", "the job could not be read")
+		return
+	}
+	writeJSON(response, http.StatusOK, detail)
+}
+
+func (s *Server) cancelJob(response http.ResponseWriter, request *http.Request) {
+	job, err := s.store.CancelJob(request.Context(), request.PathValue("id"))
+	if errors.Is(err, sqlitestore.ErrNotFound) {
+		writeError(response, http.StatusNotFound, "not_found", "job not found")
+		return
+	}
+	if errors.Is(err, sqlitestore.ErrInvalidTransition) {
+		writeError(response, http.StatusConflict, "invalid_state", err.Error())
+		return
+	}
+	if err != nil {
+		writeError(response, http.StatusInternalServerError, "internal", "the job could not be canceled")
 		return
 	}
 	writeJSON(response, http.StatusOK, job)

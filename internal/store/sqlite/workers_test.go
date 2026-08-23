@@ -82,6 +82,19 @@ func TestWorkerSyncDispatchesAndCompletesJobIdempotently(t *testing.T) {
 	if job.State != domain.JobSucceeded {
 		t.Fatalf("job state = %s, want succeeded", job.State)
 	}
+	detail, err := store.GetJobDetail(ctx, created.Job.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(detail.Attempts) != 1 || detail.Attempts[0].State != domain.AttemptSucceeded {
+		t.Fatalf("attempts = %+v, want one succeeded attempt", detail.Attempts)
+	}
+	if len(detail.Metrics) != 1 || detail.Metrics[0].Name != "validation/accuracy" || detail.Metrics[0].Value != 0.91 {
+		t.Fatalf("metrics = %+v, want recorded accuracy", detail.Metrics)
+	}
+	if len(detail.Artifacts) != 1 || detail.Artifacts[0].Name != "result" || detail.Artifacts[0].SHA256 != "abc" {
+		t.Fatalf("artifacts = %+v, want recorded result", detail.Artifacts)
+	}
 	if _, err := store.SyncWorker(ctx, credential.WorkerID, request); err != nil {
 		t.Fatalf("idempotent event replay: %v", err)
 	}

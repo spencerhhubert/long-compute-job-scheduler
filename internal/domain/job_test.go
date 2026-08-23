@@ -80,3 +80,12 @@ func TestJobSpecValidateRejectsInvalidMetricDefinitions(t *testing.T) {
 		}
 	}
 }
+
+func TestJobSpecValidateRejectsArtifactPathEscape(t *testing.T) {
+	spec := validSpec()
+	spec.Artifacts = []ArtifactRule{{Name: "results", Glob: "../private/*"}}
+	err := spec.Validate()
+	if err == nil || !strings.Contains(err.Error(), "inside the job work directory") {
+		t.Fatalf("error = %v, want artifact path rejection", err)
+	}
+}

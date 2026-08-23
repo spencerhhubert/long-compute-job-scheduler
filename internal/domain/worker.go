@@ -62,6 +62,48 @@ type ArtifactAnnouncement struct {
 	SHA256    string `json:"sha256"`
 }
 
+type Attempt struct {
+	ID             string       `json:"id"`
+	JobID          string       `json:"job_id"`
+	AttemptNumber  uint32       `json:"attempt_number"`
+	WorkerID       string       `json:"worker_id"`
+	State          AttemptState `json:"state"`
+	Revision       uint64       `json:"revision"`
+	OfferedAt      time.Time    `json:"offered_at"`
+	LeaseExpiresAt time.Time    `json:"lease_expires_at"`
+	AcceptedAt     *time.Time   `json:"accepted_at,omitempty"`
+	StartedAt      *time.Time   `json:"started_at,omitempty"`
+	FinishedAt     *time.Time   `json:"finished_at,omitempty"`
+	ExitCode       *int         `json:"exit_code,omitempty"`
+	Error          string       `json:"error,omitempty"`
+	LogURI         string       `json:"log_uri,omitempty"`
+}
+
+type RecordedMetric struct {
+	AttemptID string    `json:"attempt_id"`
+	EventID   string    `json:"event_id"`
+	Name      string    `json:"name"`
+	Value     float64   `json:"value"`
+	Step      *int64    `json:"step,omitempty"`
+	ObservedAt time.Time `json:"observed_at"`
+}
+
+type Artifact struct {
+	AttemptID string    `json:"attempt_id"`
+	Name      string    `json:"name"`
+	URI       string    `json:"uri"`
+	SizeBytes int64     `json:"size_bytes"`
+	SHA256    string    `json:"sha256"`
+	CreatedAt time.Time `json:"created_at"`
+}
+
+type JobDetail struct {
+	Job       Job              `json:"job"`
+	Attempts  []Attempt        `json:"attempts"`
+	Metrics   []RecordedMetric `json:"metrics"`
+	Artifacts []Artifact       `json:"artifacts"`
+}
+
 type WorkerEvent struct {
 	Sequence   uint64                 `json:"sequence"`
 	EventID    string                 `json:"event_id"`
