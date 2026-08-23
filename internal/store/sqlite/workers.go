@@ -208,6 +208,9 @@ func applyWorkerEvent(ctx context.Context, tx *sql.Tx, workerID string, event do
 		if event.ExitCode != nil {
 			exitCode = *event.ExitCode
 		}
+		if len(event.LogTail) > 64<<10 {
+			return errors.New("attempt log tail exceeds 64 KiB")
+		}
 		attemptState := domain.AttemptFailed
 		jobState := domain.JobFailed
 		if exitCode == 0 && event.Error == "" {
@@ -217,8 +220,8 @@ func applyWorkerEvent(ctx context.Context, tx *sql.Tx, workerID string, event do
 			jobState = domain.JobQueued
 		}
 		if _, err := tx.ExecContext(ctx, `
-			UPDATE attempts SET state = ?, revision = revision + 1, finished_at = ?, exit_code = ?, error = ?, log_uri = ? WHERE id = ?
-		`, attemptState, formatTime(event.OccurredAt), exitCode, event.Error, event.LogURI, event.AttemptID); err != nil {
+			UPDATE attempts SET state = ?, revision = revision + 1, finished_at = ?, exit_code = ?, error = ?, log_uri = ?, log_tail = ? WHERE id = ?
+		`, attemptState, formatTime(event.OccurredAt), exitCode, event.Error, event.LogURI, event.LogTail, event.AttemptID); err != nil {
 			return fmt.Errorf("finish attempt: %w", err)
 		}
 		if _, err := tx.ExecContext(ctx, `UPDATE jobs SET state = ?, revision = revision + 1, updated_at = ? WHERE id = ?`, jobState, formatTime(recordedAt), jobID); err != nil {

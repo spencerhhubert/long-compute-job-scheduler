@@ -199,7 +199,7 @@ func (s *Store) MarkStarted(ctx context.Context, commandID string, pid int, work
 	return tx.Commit()
 }
 
-func (s *Store) MarkFinished(ctx context.Context, commandID string, exitCode int, runError, logURI string, artifacts []domain.ArtifactAnnouncement) error {
+func (s *Store) MarkFinished(ctx context.Context, commandID string, exitCode int, runError, logURI, logTail string, artifacts []domain.ArtifactAnnouncement) error {
 	tx, err := s.db.BeginTx(ctx, nil)
 	if err != nil {
 		return err
@@ -219,7 +219,7 @@ func (s *Store) MarkFinished(ctx context.Context, commandID string, exitCode int
 	}
 	if err := enqueueEvent(ctx, tx, domain.WorkerEvent{
 		AttemptID: attemptID, Kind: domain.WorkerEventAttemptFinished, OccurredAt: now,
-		ExitCode: &exitCode, Error: runError, LogURI: logURI, Artifacts: artifacts,
+		ExitCode: &exitCode, Error: runError, LogURI: logURI, LogTail: logTail, Artifacts: artifacts,
 	}, now); err != nil {
 		return err
 	}

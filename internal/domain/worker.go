@@ -77,6 +77,7 @@ type Attempt struct {
 	ExitCode       *int         `json:"exit_code,omitempty"`
 	Error          string       `json:"error,omitempty"`
 	LogURI         string       `json:"log_uri,omitempty"`
+	LogTail        string       `json:"log_tail,omitempty"`
 }
 
 type RecordedMetric struct {
@@ -113,6 +114,7 @@ type WorkerEvent struct {
 	ExitCode   *int                   `json:"exit_code,omitempty"`
 	Error      string                 `json:"error,omitempty"`
 	LogURI     string                 `json:"log_uri,omitempty"`
+	LogTail    string                 `json:"log_tail,omitempty"`
 	Metric     *MetricSample          `json:"metric,omitempty"`
 	Artifacts  []ArtifactAnnouncement `json:"artifacts,omitempty"`
 }

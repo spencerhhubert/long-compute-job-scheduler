@@ -72,7 +72,7 @@ func TestStorePersistsCommandsAndOutboxAcrossRestart(t *testing.T) {
 	if len(events) != 1 || events[0].Sequence != 3 {
 		t.Fatalf("events after acknowledgement = %+v", events)
 	}
-	if err := reopened.MarkFinished(ctx, command.CommandID, 0, "", "worker://worker/log", nil); err != nil {
+	if err := reopened.MarkFinished(ctx, command.CommandID, 0, "", "worker://worker/log", "finished cleanly", nil); err != nil {
 		t.Fatal(err)
 	}
 	if commands, err := reopened.RunningCommands(ctx); err != nil || len(commands) != 0 {

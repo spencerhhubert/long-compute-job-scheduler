@@ -5,15 +5,17 @@ heterogeneous set of machines. It is designed for ML experiments, CPU data
 generation, temporary cloud workers, intermittent connectivity, and jobs whose
 useful output may be much larger than the control-plane host.
 
-The project is currently pre-alpha. The first vertical slice provides durable,
-idempotent job submission, hashed operator tokens, persistent browser sessions,
-authenticated central reads, and a compact operational dashboard. Worker
-execution remains on the roadmap.
+The project is currently pre-alpha. Its working vertical slice provides
+durable, idempotent job submission, worker-bound credentials, outbound worker
+sync, worker-local SQLite inbox/outbox state, exact Git materialization,
+supervised native execution, scalar metrics, filesystem artifacts, and a
+compact operational console.
 
-> **Current limitation:** this build does not execute jobs. Submitted jobs are
-> durable records that remain queued because worker enrollment, dispatch, and
-> execution are not implemented yet. See the
-> [verified requirements checklist](docs/requirements.md) for exact status.
+The deployed path has completed real jobs and has reattached to a live attempt
+across an agent restart. Machine-loss/checkpoint recovery, automated health
+actions, targeted hooks, remote artifact retrieval, containers, and secret
+providers remain incomplete. See the [verified requirements
+checklist](docs/requirements.md) for exact status and acceptance evidence.
 
 The authenticated console is available at
 [compute-jobs.spencerhubert.info](https://compute-jobs.spencerhubert.info).

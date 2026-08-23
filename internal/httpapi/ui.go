@@ -3,7 +3,9 @@ package httpapi
 import (
 	"html/template"
 	"io"
+	"math"
 	"net/http"
+	"sort"
 	"strconv"
 	"strings"
 	"time"
@@ -18,10 +20,33 @@ type loginView struct {
 type dashboardView struct {
 	TokenName string
 	Jobs      []domain.Job
+	Workers   []domain.Worker
 	Queued    int
 	Active    int
 	Failed    int
 	Succeeded int
+}
+
+type jobDetailView struct {
+	TokenName string
+	Detail    domain.JobDetail
+	Metrics   []metricSeriesView
+}
+
+type metricSeriesView struct {
+	Definition domain.MetricDefinition
+	Samples    []domain.RecordedMetric
+	Latest     *domain.RecordedMetric
+	References []metricReferenceView
+	Points     string
+	LatestX    float64
+	LatestY    float64
+	HasSamples bool
+}
+
+type metricReferenceView struct {
+	Line domain.MetricReferenceLine
+	Y    float64
 }
 
 var pageFunctions = template.FuncMap{
@@ -67,6 +92,102 @@ var pageFunctions = template.FuncMap{
 		}
 	},
 	"metricValue": formatMetricValue,
+	"labels": func(labels map[string]string) string {
+		parts := make([]string, 0, len(labels))
+		for name, value := range labels {
+			parts = append(parts, name+"="+value)
+		}
+		sort.Strings(parts)
+		if len(parts) == 0 {
+			return "—"
+		}
+		return strings.Join(parts, " · ")
+	},
+	"workerResources": func(capacity domain.WorkerCapacity) string {
+		parts := []string{formatCount(capacity.CPU, "CPU")}
+		if capacity.MemoryBytes > 0 {
+			parts = append(parts, strconv.FormatUint(capacity.MemoryBytes/(1<<30), 10)+" GiB RAM")
+		}
+		if capacity.GPUCount > 0 {
+			parts = append(parts, formatCount(capacity.GPUCount, "GPU"))
+		}
+		parts = append(parts, strconv.FormatUint(uint64(capacity.MaxParallel), 10)+" slots")
+		return strings.Join(parts, " · ")
+	},
+	"optionalTime": func(value *time.Time) string {
+		if value == nil {
+			return "—"
+		}
+		return value.UTC().Format("2006-01-02 15:04:05 UTC")
+	},
+	"exitCode": func(value *int) string {
+		if value == nil {
+			return "—"
+		}
+		return strconv.Itoa(*value)
+	},
+}
+
+func buildMetricSeries(detail domain.JobDetail) []metricSeriesView {
+	series := make([]metricSeriesView, 0, len(detail.Job.Spec.Metrics))
+	for _, definition := range detail.Job.Spec.Metrics {
+		view := metricSeriesView{Definition: definition, Samples: make([]domain.RecordedMetric, 0)}
+		minimum := math.Inf(1)
+		maximum := math.Inf(-1)
+		if definition.Format == domain.MetricFormatPercent {
+			minimum, maximum = 0, 1
+		}
+		for _, sample := range detail.Metrics {
+			if sample.Name != definition.Name {
+				continue
+			}
+			view.Samples = append(view.Samples, sample)
+			minimum = math.Min(minimum, sample.Value)
+			maximum = math.Max(maximum, sample.Value)
+		}
+		for _, line := range definition.ReferenceLines {
+			minimum = math.Min(minimum, line.Value)
+			maximum = math.Max(maximum, line.Value)
+		}
+		if math.IsInf(minimum, 1) {
+			minimum, maximum = 0, 1
+		} else if minimum == maximum {
+			padding := math.Abs(minimum) * 0.1
+			if padding == 0 {
+				padding = 1
+			}
+			minimum -= padding
+			maximum += padding
+		} else if definition.Format != domain.MetricFormatPercent {
+			padding := (maximum - minimum) * 0.08
+			minimum -= padding
+			maximum += padding
+		}
+		yFor := func(value float64) float64 {
+			return 36 - ((value-minimum)/(maximum-minimum))*32
+		}
+		pointParts := make([]string, 0, len(view.Samples))
+		for index, sample := range view.Samples {
+			x := 50.0
+			if len(view.Samples) > 1 {
+				x = 4 + (float64(index)/float64(len(view.Samples)-1))*92
+			}
+			y := yFor(sample.Value)
+			pointParts = append(pointParts, strconv.FormatFloat(x, 'f', 2, 64)+","+strconv.FormatFloat(y, 'f', 2, 64))
+			view.LatestX, view.LatestY = x, y
+		}
+		view.Points = strings.Join(pointParts, " ")
+		view.HasSamples = len(view.Samples) > 0
+		if view.HasSamples {
+			latest := view.Samples[len(view.Samples)-1]
+			view.Latest = &latest
+		}
+		for _, line := range definition.ReferenceLines {
+			view.References = append(view.References, metricReferenceView{Line: line, Y: yFor(line.Value)})
+		}
+		series = append(series, view)
+	}
+	return series
 }
 
 func formatCount(count uint32, unit string) string {
@@ -102,7 +223,7 @@ var loginTemplate = template.Must(template.New("login").Parse(`<!doctype html>
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <meta name="color-scheme" content="light dark">
   <title>Sign in · Compute Jobs</title>
-  <link rel="stylesheet" href="/static/app.css?v=2">
+  <link rel="stylesheet" href="/static/app.css?v=3">
   <script src="/static/theme.js"></script>
 </head>
 <body>
@@ -140,7 +261,7 @@ var dashboardTemplate = template.Must(template.New("dashboard").Funcs(pageFuncti
   <meta name="color-scheme" content="light dark">
   <meta http-equiv="refresh" content="30">
   <title>Compute Jobs</title>
-  <link rel="stylesheet" href="/static/app.css?v=2">
+  <link rel="stylesheet" href="/static/app.css?v=3">
   <script src="/static/theme.js"></script>
 </head>
 <body>
@@ -168,7 +289,7 @@ var dashboardTemplate = template.Must(template.New("dashboard").Funcs(pageFuncti
       <div><dt>Active</dt><dd>{{.Active}}</dd></div>
       <div><dt>Failed</dt><dd>{{.Failed}}</dd></div>
       <div><dt>Succeeded</dt><dd>{{.Succeeded}}</dd></div>
-      <div><dt>Workers</dt><dd>0</dd></div>
+      <div><dt>Workers</dt><dd>{{len .Workers}}</dd></div>
     </dl>
 
     <section class="panel" aria-labelledby="jobs-title">
@@ -180,7 +301,7 @@ var dashboardTemplate = template.Must(template.New("dashboard").Funcs(pageFuncti
             {{range .Jobs}}
             <tr>
               <td><span class="state" data-state="{{.State}}">{{.State}}</span></td>
-              <td><strong>{{.Spec.Name}}</strong><small title="{{.ID}}">{{.ID}}</small><small class="command" title="{{command .Spec.Command}}">{{command .Spec.Command}}</small></td>
+              <td><strong><a href="/jobs/{{.ID}}">{{.Spec.Name}}</a></strong><small title="{{.ID}}">{{.ID}}</small><small class="command" title="{{command .Spec.Command}}">{{command .Spec.Command}}</small></td>
               <td>{{.Spec.Project}}</td>
               <td>{{resources .Spec.Resources}}</td>
               <td>
@@ -203,8 +324,102 @@ var dashboardTemplate = template.Must(template.New("dashboard").Funcs(pageFuncti
     </section>
 
     <section class="panel" aria-labelledby="workers-title">
-      <div class="panel-header"><h2 id="workers-title">Workers</h2><span>0 enrolled</span></div>
-      <div class="empty-block"><strong>No workers enrolled.</strong><span>Worker enrollment and execution are not enabled in this build.</span></div>
+      <div class="panel-header"><h2 id="workers-title">Workers</h2><span>{{len .Workers}} enrolled</span></div>
+      {{if .Workers}}<div class="table-scroll"><table>
+        <thead><tr><th>Status</th><th>Worker</th><th>Capacity</th><th>Labels</th><th>Last seen</th><th>Agent</th></tr></thead>
+        <tbody>{{range .Workers}}<tr>
+          <td><span class="state" data-state="{{.Status}}">{{.Status}}</span></td>
+          <td><strong>{{.Name}}</strong><small>{{.ID}}</small></td>
+          <td>{{workerResources .Capacity}}</td>
+          <td><small class="wide">{{labels .Capacity.Labels}}</small></td>
+          <td>{{optionalTime .LastSeenAt}}</td>
+          <td><small class="wide" title="{{.AgentVersion}}">{{.AgentVersion}}</small></td>
+        </tr>{{end}}</tbody>
+      </table></div>{{else}}
+      <div class="empty-block"><strong>No workers enrolled.</strong><span>Provision a worker-bound credential with <code>lcjs worker create</code>.</span></div>
+      {{end}}
+    </section>
+  </main>
+</body>
+</html>`))
+
+var jobTemplate = template.Must(template.New("job").Funcs(pageFunctions).Parse(`<!doctype html>
+<html lang="en" data-theme="light">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="color-scheme" content="light dark">
+  <meta http-equiv="refresh" content="15">
+  <title>{{.Detail.Job.Spec.Name}} · Compute Jobs</title>
+  <link rel="stylesheet" href="/static/app.css?v=3">
+  <script src="/static/theme.js"></script>
+</head>
+<body>
+  <header class="topbar">
+    <a class="brand" href="/">Compute Jobs</a>
+    <nav class="toolbar" aria-label="Console controls">
+      <a href="/">Overview</a>
+      <label class="theme-control">Theme
+        <select data-theme-picker aria-label="Color theme">
+          <option value="light">Light</option>
+          <option value="dark">Dark</option>
+          <option value="system">System</option>
+        </select>
+      </label>
+      <form method="post" action="/logout"><button class="button-secondary" type="submit">Sign out</button></form>
+    </nav>
+  </header>
+  <main class="console">
+    <div class="section-heading">
+      <div><h1>{{.Detail.Job.Spec.Name}} <span class="state" data-state="{{.Detail.Job.State}}">{{.Detail.Job.State}}</span></h1><p>{{.Detail.Job.Spec.Project}} · {{.Detail.Job.ID}} · refreshes every 15 seconds</p></div>
+      <span class="identity">{{.TokenName}}</span>
+    </div>
+
+    <section class="panel" aria-labelledby="spec-title">
+      <div class="panel-header"><h2 id="spec-title">Execution</h2><span>revision {{.Detail.Job.Revision}}</span></div>
+      <dl class="detail-grid">
+        <div><dt>Command</dt><dd><code>{{command .Detail.Job.Spec.Command}}</code></dd></div>
+        <div><dt>Source</dt><dd><code>{{.Detail.Job.Spec.Source.GitURL}}</code><small>{{.Detail.Job.Spec.Source.Commit}}</small></dd></div>
+        <div><dt>Resources</dt><dd>{{resources .Detail.Job.Spec.Resources}}</dd></div>
+        <div><dt>Created</dt><dd>{{jobTime .Detail.Job.CreatedAt}}</dd></div>
+      </dl>
+    </section>
+
+    <section class="panel" aria-labelledby="attempts-title">
+      <div class="panel-header"><h2 id="attempts-title">Attempts</h2><span>{{len .Detail.Attempts}} total</span></div>
+      <div class="table-scroll"><table>
+        <thead><tr><th>#</th><th>State</th><th>Worker</th><th>Started</th><th>Finished</th><th>Exit</th><th>Log</th><th>Error</th></tr></thead>
+        <tbody>{{range .Detail.Attempts}}<tr>
+          <td class="numeric">{{.AttemptNumber}}</td>
+          <td><span class="state" data-state="{{.State}}">{{.State}}</span><small>{{.ID}}</small></td>
+          <td><small class="wide">{{.WorkerID}}</small></td>
+          <td>{{optionalTime .StartedAt}}</td><td>{{optionalTime .FinishedAt}}</td><td class="numeric">{{exitCode .ExitCode}}</td>
+          <td><small class="wide" title="{{.LogURI}}">{{if .LogURI}}{{.LogURI}}{{else}}—{{end}}</small></td>
+          <td class="error-cell">{{if .Error}}{{.Error}}{{else}}—{{end}}</td>
+        </tr>{{else}}<tr><td class="empty" colspan="8">No attempt has been assigned.</td></tr>{{end}}</tbody>
+      </table></div>
+      {{range .Detail.Attempts}}{{if .LogTail}}<details class="log-tail" open><summary>Attempt {{.AttemptNumber}} recent log (last 64 KiB)</summary><pre>{{.LogTail}}</pre></details>{{end}}{{end}}
+    </section>
+
+    <section class="panel" aria-labelledby="metrics-title">
+      <div class="panel-header"><h2 id="metrics-title">Metrics</h2><span>{{len .Detail.Metrics}} samples</span></div>
+      {{if .Metrics}}<div class="metric-grid">{{range $series := .Metrics}}<article class="metric-chart">
+        <header><div><strong>{{metricName .Definition}}</strong><small>{{metricObjective .Definition.Objective}}</small></div><b>{{with .Latest}}{{metricValue $series.Definition .Value}}{{else}}No samples{{end}}</b></header>
+        <svg viewBox="0 0 100 40" preserveAspectRatio="none" role="img" aria-label="{{metricName .Definition}} samples and reference lines">
+          <line class="chart-axis" x1="4" y1="36" x2="96" y2="36"></line>
+          {{range .References}}<line class="chart-reference" data-kind="{{.Line.Kind}}" x1="4" y1="{{.Y}}" x2="96" y2="{{.Y}}"></line>{{end}}
+          {{if .HasSamples}}<polyline class="chart-series" points="{{.Points}}"></polyline><circle class="chart-point" cx="{{.LatestX}}" cy="{{.LatestY}}" r="1.8"></circle>{{end}}
+        </svg>
+        <div class="metric-references">{{range .References}}<span class="reference-line" data-kind="{{.Line.Kind}}"><i aria-hidden="true"></i>{{.Line.Label}} <b>{{metricValue $series.Definition .Line.Value}}</b></span>{{else}}<span class="no-reference">No reference lines</span>{{end}}</div>
+      </article>{{end}}</div>{{else}}<div class="empty-block"><strong>No metrics declared.</strong></div>{{end}}
+    </section>
+
+    <section class="panel" aria-labelledby="artifacts-title">
+      <div class="panel-header"><h2 id="artifacts-title">Artifacts</h2><span>{{len .Detail.Artifacts}} recorded</span></div>
+      <div class="table-scroll"><table>
+        <thead><tr><th>Name</th><th>Size</th><th>SHA-256</th><th>Location</th><th>Created</th></tr></thead>
+        <tbody>{{range .Detail.Artifacts}}<tr><td><strong>{{.Name}}</strong></td><td class="numeric">{{.SizeBytes}} B</td><td><small class="wide">{{.SHA256}}</small></td><td><small class="wide">{{.URI}}</small></td><td>{{jobTime .CreatedAt}}</td></tr>{{else}}<tr><td class="empty" colspan="5">No artifacts recorded.</td></tr>{{end}}</tbody>
+      </table></div>
     </section>
   </main>
 </body>
@@ -312,8 +527,10 @@ td { padding: 7px 9px; border-bottom: 1px solid var(--border); vertical-align: t
 tbody tr:last-child td { border-bottom: 0; }
 tbody tr:hover td { background: var(--panel-alt); }
 td strong { display: block; font-weight: 650; }
+td strong a { color: var(--text); }
 td small { display: block; max-width: 360px; overflow: hidden; color: var(--muted); font: 10px/1.35 ui-monospace, SFMono-Regular, Consolas, monospace; text-overflow: ellipsis; }
 td small.command { max-width: 440px; margin-top: 2px; }
+td small.wide { max-width: 520px; }
 .metric-list { display: grid; gap: 5px; min-width: 190px; white-space: normal; }
 .metric-definition { display: grid; gap: 2px; }
 .metric-definition > div { display: flex; align-items: baseline; gap: 6px; }
@@ -328,11 +545,36 @@ td small.command { max-width: 440px; margin-top: 2px; }
 .no-reference { color: var(--muted); font-size: 10px; }
 .numeric { text-align: right; font-variant-numeric: tabular-nums; }
 .state { display: inline-block; padding: 1px 6px; border: 1px solid var(--border-strong); border-radius: 10px; font-size: 10px; font-weight: 700; }
-.state[data-state="running"], .state[data-state="succeeded"] { border-color: var(--success); background: var(--success-bg); color: var(--success); }
-.state[data-state="failed"], .state[data-state="canceled"] { border-color: var(--danger); background: var(--danger-bg); color: var(--danger); }
+.state[data-state="running"], .state[data-state="succeeded"], .state[data-state="online"] { border-color: var(--success); background: var(--success-bg); color: var(--success); }
+.state[data-state="failed"], .state[data-state="canceled"], .state[data-state="offline"] { border-color: var(--danger); background: var(--danger-bg); color: var(--danger); }
 .empty { height: 72px; color: var(--muted); text-align: center; vertical-align: middle; }
 .empty-block { display: flex; flex-direction: column; align-items: center; justify-content: center; min-height: 76px; padding: 14px; color: var(--muted); }
 .empty-block strong { color: var(--text); }
+.detail-grid { display: grid; grid-template-columns: minmax(240px, 2fr) minmax(300px, 3fr) minmax(120px, 1fr) minmax(160px, 1fr); margin: 0; }
+.detail-grid > div { min-width: 0; padding: 9px 10px; border-right: 1px solid var(--border); }
+.detail-grid > div:last-child { border-right: 0; }
+.detail-grid dt { margin-bottom: 3px; color: var(--muted); font-size: 10px; font-weight: 650; letter-spacing: .04em; text-transform: uppercase; }
+.detail-grid dd { min-width: 0; margin: 0; overflow: hidden; text-overflow: ellipsis; }
+.detail-grid code, .empty-block code { font: 11px ui-monospace, SFMono-Regular, Consolas, monospace; }
+.detail-grid small { display: block; overflow: hidden; color: var(--muted); font: 10px ui-monospace, SFMono-Regular, Consolas, monospace; text-overflow: ellipsis; }
+.error-cell { max-width: 360px; white-space: normal; color: var(--danger); }
+.log-tail { border-top: 1px solid var(--border); }
+.log-tail summary { padding: 7px 10px; cursor: pointer; color: var(--muted); font-size: 11px; font-weight: 650; }
+.log-tail pre { max-height: 300px; margin: 0; overflow: auto; padding: 10px; background: var(--panel-alt); border-top: 1px solid var(--border); font: 11px/1.45 ui-monospace, SFMono-Regular, Consolas, monospace; white-space: pre-wrap; }
+.metric-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(300px, 1fr)); }
+.metric-chart { min-width: 0; padding: 10px; border-right: 1px solid var(--border); border-bottom: 1px solid var(--border); }
+.metric-chart header { display: flex; align-items: baseline; justify-content: space-between; gap: 12px; }
+.metric-chart header strong { display: block; }
+.metric-chart header small { margin-left: 6px; color: var(--muted); font-size: 9px; text-transform: uppercase; }
+.metric-chart header b { font-size: 16px; font-variant-numeric: tabular-nums; }
+.metric-chart svg { display: block; width: 100%; height: 150px; margin-top: 5px; background: var(--panel-alt); border: 1px solid var(--border); }
+.chart-axis { stroke: var(--border-strong); stroke-width: .4; }
+.chart-reference { stroke: var(--accent); stroke-width: .5; stroke-dasharray: 2 1; }
+.chart-reference[data-kind="goal"] { stroke-width: .9; stroke-dasharray: none; }
+.chart-reference[data-kind="threshold"] { stroke: var(--danger); }
+.chart-series { fill: none; stroke: var(--success); stroke-width: 1.1; vector-effect: non-scaling-stroke; }
+.chart-point { fill: var(--success); vector-effect: non-scaling-stroke; }
+.metric-references { display: flex; flex-wrap: wrap; gap: 4px 14px; margin-top: 5px; }
 .login-main { width: min(480px, calc(100% - 32px)); margin: 44px auto; }
 .login-panel { border: 1px solid var(--border); background: var(--panel); padding: 18px; }
 .login-panel h1 { margin-bottom: 5px; }
@@ -354,5 +596,8 @@ td small.command { max-width: 440px; margin-top: 2px; }
   .stats div:nth-child(2n) { border-right: 0; }
   .stats div:last-child { border-bottom: 0; }
   .section-heading { align-items: flex-start; flex-direction: column; }
+  .detail-grid { grid-template-columns: 1fr; }
+  .detail-grid > div { border-right: 0; border-bottom: 1px solid var(--border); }
+  .detail-grid > div:last-child { border-bottom: 0; }
 }
 `

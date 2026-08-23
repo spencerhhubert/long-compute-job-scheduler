@@ -93,7 +93,7 @@ func (a *Agent) failBeforeLaunch(ctx context.Context, command domain.WorkerComma
 	if err := a.store.MarkStarted(ctx, command.CommandID, 0, workDir, statusPath, metricsPath); err != nil {
 		return err
 	}
-	return a.store.MarkFinished(ctx, command.CommandID, -1, runErr.Error(), workerURI(a.config.WorkerID, command, "run.log"), nil)
+	return a.store.MarkFinished(ctx, command.CommandID, -1, runErr.Error(), workerURI(a.config.WorkerID, command, "run.log"), "", nil)
 }
 
 func materializeSource(ctx context.Context, workDir string, source domain.Source) error {
@@ -160,11 +160,40 @@ func (a *Agent) reconcileRunning(ctx context.Context) error {
 			status.ExitCode = -1
 			status.Error = errors.Join(errors.New(status.Error), err).Error()
 		}
-		if err := a.store.MarkFinished(ctx, command.Command.CommandID, status.ExitCode, status.Error, workerURI(a.config.WorkerID, command.Command, "run.log"), artifacts); err != nil {
+		logTail, err := readFileTail(filepath.Join(filepath.Dir(command.StatusPath), "run.log"), 64<<10)
+		if err != nil && !errors.Is(err, os.ErrNotExist) {
+			status.ExitCode = -1
+			status.Error = errors.Join(errors.New(status.Error), fmt.Errorf("read run log: %w", err)).Error()
+		}
+		if err := a.store.MarkFinished(ctx, command.Command.CommandID, status.ExitCode, status.Error, workerURI(a.config.WorkerID, command.Command, "run.log"), logTail, artifacts); err != nil {
 			return err
 		}
 	}
 	return nil
+}
+
+func readFileTail(path string, limit int64) (string, error) {
+	file, err := os.Open(path)
+	if err != nil {
+		return "", err
+	}
+	defer file.Close()
+	info, err := file.Stat()
+	if err != nil {
+		return "", err
+	}
+	start := info.Size() - limit
+	if start < 0 {
+		start = 0
+	}
+	if _, err := file.Seek(start, io.SeekStart); err != nil {
+		return "", err
+	}
+	data, err := io.ReadAll(io.LimitReader(file, limit))
+	if err != nil {
+		return "", err
+	}
+	return string(data), nil
 }
 
 func readRunStatus(path string) (RunStatus, bool, error) {

@@ -58,6 +58,7 @@ func New(store Store, bootstrapToken string) (*Server, error) {
 
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET /{$}", s.home)
+	mux.HandleFunc("GET /jobs/{id}", s.jobPage)
 	mux.HandleFunc("GET /login", s.loginPage)
 	mux.HandleFunc("POST /login", s.login)
 	mux.HandleFunc("POST /logout", s.logout)
@@ -122,7 +123,12 @@ func (s *Server) home(response http.ResponseWriter, request *http.Request) {
 		http.Error(response, "the console is temporarily unavailable", http.StatusInternalServerError)
 		return
 	}
-	data := dashboardView{TokenName: session.TokenName, Jobs: jobs}
+	workers, err := s.store.ListWorkers(request.Context(), 30*time.Second)
+	if err != nil {
+		http.Error(response, "the console is temporarily unavailable", http.StatusInternalServerError)
+		return
+	}
+	data := dashboardView{TokenName: session.TokenName, Jobs: jobs, Workers: workers}
 	for _, job := range jobs {
 		switch job.State {
 		case domain.JobQueued, domain.JobRetryWait:
@@ -136,6 +142,32 @@ func (s *Server) home(response http.ResponseWriter, request *http.Request) {
 		}
 	}
 	renderPage(response, dashboardTemplate, data)
+}
+
+func (s *Server) jobPage(response http.ResponseWriter, request *http.Request) {
+	session, _, err := s.browserSession(request)
+	if errors.Is(err, sqlitestore.ErrNotFound) {
+		http.Redirect(response, request, "/login", http.StatusSeeOther)
+		return
+	}
+	if err != nil {
+		http.Error(response, "the console is temporarily unavailable", http.StatusInternalServerError)
+		return
+	}
+	detail, err := s.store.GetJobDetail(request.Context(), request.PathValue("id"))
+	if errors.Is(err, sqlitestore.ErrNotFound) {
+		http.NotFound(response, request)
+		return
+	}
+	if err != nil {
+		http.Error(response, "the job could not be read", http.StatusInternalServerError)
+		return
+	}
+	renderPage(response, jobTemplate, jobDetailView{
+		TokenName: session.TokenName,
+		Detail:    detail,
+		Metrics:   buildMetricSeries(detail),
+	})
 }
 
 func (s *Server) loginPage(response http.ResponseWriter, request *http.Request) {
