@@ -217,9 +217,9 @@ func (s *Store) MarkFinished(ctx context.Context, commandID string, exitCode int
 	if err := tx.QueryRowContext(ctx, `SELECT attempt_id FROM commands WHERE command_id = ?`, commandID).Scan(&attemptID); err != nil {
 		return err
 	}
-		if err := enqueueEvent(ctx, tx, domain.WorkerEvent{
-			AttemptID: attemptID, Kind: domain.WorkerEventAttemptFinished, OccurredAt: now,
-			ExitCode: &exitCode, Error: runError, LogURI: logURI, LogTail: logTail, Artifacts: artifacts,
+	if err := enqueueEvent(ctx, tx, domain.WorkerEvent{
+		AttemptID: attemptID, Kind: domain.WorkerEventAttemptFinished, OccurredAt: now,
+		ExitCode: &exitCode, Error: runError, LogURI: logURI, LogTail: logTail, Artifacts: artifacts,
 	}, now); err != nil {
 		return err
 	}
