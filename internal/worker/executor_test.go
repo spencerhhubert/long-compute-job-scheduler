@@ -1,6 +1,7 @@
 package worker
 
 import (
+	"bytes"
 	"context"
 	"os"
 	"os/exec"
@@ -69,6 +70,45 @@ func TestBuildProcessRunsDirectlyInProjectDirectory(t *testing.T) {
 	// The worker process environment is inherited, not replaced.
 	if len(process.Env) < len(os.Environ()) {
 		t.Fatalf("environment has %d entries, want at least the inherited %d", len(process.Env), len(os.Environ()))
+	}
+}
+
+func TestCollectArtifactsInlinesOnlySmallTextContent(t *testing.T) {
+	workDir := t.TempDir()
+	command := testCommand("example-research")
+	command.Job.Spec.Artifacts = []domain.ArtifactRule{
+		{Name: "result", Glob: "champion.json"},
+		{Name: "weights", Glob: "model.bin"},
+		{Name: "trace", Glob: "trace.log"},
+	}
+	const text = "{\"score\": 0.91}\n"
+	large := bytes.Repeat([]byte("line\n"), maxInlineArtifactBytes/5+1)
+	for name, content := range map[string][]byte{
+		"champion.json": []byte(text),
+		"model.bin":     {0xff, 0xfe, 0x00, 0x01},
+		"trace.log":     large,
+	} {
+		if err := os.WriteFile(filepath.Join(workDir, name), content, 0o600); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	announcements, err := collectArtifacts("wrk_test", t.TempDir(), StoredCommand{Command: command, WorkDir: workDir})
+	if err != nil {
+		t.Fatal(err)
+	}
+	byName := make(map[string]domain.ArtifactAnnouncement, len(announcements))
+	for _, announcement := range announcements {
+		byName[announcement.Name] = announcement
+	}
+	if got := byName["result"]; got.Content != text {
+		t.Fatalf("small text artifact content = %q, want %q", got.Content, text)
+	}
+	if got := byName["weights"]; got.Content != "" || got.SizeBytes != 4 {
+		t.Fatalf("binary artifact = %+v, want metadata without content", got)
+	}
+	if got := byName["trace"]; got.Content != "" || got.SizeBytes != int64(len(large)) {
+		t.Fatalf("large artifact = %+v, want metadata without content", got)
 	}
 }
 
