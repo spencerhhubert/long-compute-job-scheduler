@@ -18,7 +18,7 @@ func (s *Store) GetJobDetail(ctx context.Context, jobID string) (domain.JobDetai
 	detail := domain.JobDetail{Job: job, Attempts: make([]domain.Attempt, 0), Metrics: make([]domain.RecordedMetric, 0), Artifacts: make([]domain.Artifact, 0), Health: make([]domain.HealthFiring, 0)}
 	attemptRows, err := s.db.QueryContext(ctx, `
 		SELECT id, job_id, attempt_number, worker_id, state, revision, offered_at,
-		       lease_expires_at, accepted_at, started_at, finished_at, exit_code, error, log_uri, log_tail
+		       lease_expires_at, accepted_at, started_at, finished_at, exit_code, error, log_uri, log_tail, git_state_json
 		FROM attempts WHERE job_id = ? ORDER BY attempt_number, id
 	`, jobID)
 	if err != nil {
@@ -29,9 +29,17 @@ func (s *Store) GetJobDetail(ctx context.Context, jobID string) (domain.JobDetai
 		var offered, lease string
 		var accepted, started, finished sql.NullString
 		var exitCode sql.NullInt64
-		if err := attemptRows.Scan(&attempt.ID, &attempt.JobID, &attempt.AttemptNumber, &attempt.WorkerID, &attempt.State, &attempt.Revision, &offered, &lease, &accepted, &started, &finished, &exitCode, &attempt.Error, &attempt.LogURI, &attempt.LogTail); err != nil {
+		var gitState []byte
+		if err := attemptRows.Scan(&attempt.ID, &attempt.JobID, &attempt.AttemptNumber, &attempt.WorkerID, &attempt.State, &attempt.Revision, &offered, &lease, &accepted, &started, &finished, &exitCode, &attempt.Error, &attempt.LogURI, &attempt.LogTail, &gitState); err != nil {
 			attemptRows.Close()
 			return domain.JobDetail{}, err
+		}
+		if len(gitState) != 0 {
+			attempt.Git = new(domain.GitState)
+			if err := json.Unmarshal(gitState, attempt.Git); err != nil {
+				attemptRows.Close()
+				return domain.JobDetail{}, fmt.Errorf("decode attempt git state: %w", err)
+			}
 		}
 		if attempt.OfferedAt, err = time.Parse(time.RFC3339Nano, offered); err != nil {
 			attemptRows.Close()

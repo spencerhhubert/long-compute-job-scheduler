@@ -27,6 +27,10 @@ type WorkerCapacity struct {
 	GPUSharedSlots uint32            `json:"gpu_shared_slots"`
 	MaxParallel    uint32            `json:"max_parallel"`
 	Labels         map[string]string `json:"labels,omitempty"`
+	// Projects lists the project names this worker has a local project
+	// directory for. A job is offered only to workers that advertise its
+	// project.
+	Projects []string `json:"projects,omitempty"`
 }
 
 type Worker struct {
@@ -62,6 +66,16 @@ type ArtifactAnnouncement struct {
 	SHA256    string `json:"sha256"`
 }
 
+// GitState is the version-control state a worker observed in its project
+// directory when an attempt started. It is recorded for reproducibility, not
+// enforced. A nil GitState means the project directory is not a git
+// repository.
+type GitState struct {
+	Commit string `json:"commit"`
+	Branch string `json:"branch,omitempty"`
+	Dirty  bool   `json:"dirty"`
+}
+
 type Attempt struct {
 	ID             string       `json:"id"`
 	JobID          string       `json:"job_id"`
@@ -78,6 +92,7 @@ type Attempt struct {
 	Error          string       `json:"error,omitempty"`
 	LogURI         string       `json:"log_uri,omitempty"`
 	LogTail        string       `json:"log_tail,omitempty"`
+	Git            *GitState    `json:"git,omitempty"`
 }
 
 type RecordedMetric struct {
@@ -136,6 +151,7 @@ type WorkerEvent struct {
 	Error      string                 `json:"error,omitempty"`
 	LogURI     string                 `json:"log_uri,omitempty"`
 	LogTail    string                 `json:"log_tail,omitempty"`
+	Git        *GitState              `json:"git,omitempty"`
 	Metric     *MetricSample          `json:"metric,omitempty"`
 	Artifacts  []ArtifactAnnouncement `json:"artifacts,omitempty"`
 }

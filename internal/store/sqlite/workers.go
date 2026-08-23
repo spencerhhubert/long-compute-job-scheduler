@@ -8,6 +8,7 @@ import (
 	"errors"
 	"fmt"
 	"math"
+	"slices"
 	"strings"
 	"time"
 
@@ -193,7 +194,15 @@ func applyWorkerEvent(ctx context.Context, tx *sql.Tx, workerID string, event do
 		if state != domain.AttemptAccepted && state != domain.AttemptOffered {
 			return fmt.Errorf("cannot start attempt in state %s", state)
 		}
-		if _, err := tx.ExecContext(ctx, `UPDATE attempts SET state = ?, revision = revision + 1, started_at = ? WHERE id = ?`, domain.AttemptRunning, formatTime(event.OccurredAt), event.AttemptID); err != nil {
+		var gitState []byte
+		if event.Git != nil {
+			encoded, err := json.Marshal(event.Git)
+			if err != nil {
+				return fmt.Errorf("encode attempt git state: %w", err)
+			}
+			gitState = encoded
+		}
+		if _, err := tx.ExecContext(ctx, `UPDATE attempts SET state = ?, revision = revision + 1, started_at = ?, git_state_json = ? WHERE id = ?`, domain.AttemptRunning, formatTime(event.OccurredAt), gitState, event.AttemptID); err != nil {
 			return fmt.Errorf("start attempt: %w", err)
 		}
 		if _, err := tx.ExecContext(ctx, `UPDATE jobs SET state = ?, revision = revision + 1, updated_at = ? WHERE id = ? AND state = ?`, domain.JobRunning, formatTime(recordedAt), jobID, domain.JobQueued); err != nil {
@@ -409,6 +418,11 @@ func addAllocation(allocation *resourceAllocation, resources domain.ResourceRequ
 }
 
 func jobFits(spec domain.JobSpec, capacity domain.WorkerCapacity, allocation resourceAllocation) bool {
+	// A job runs in the worker's directory for its project, so workers that
+	// do not advertise the project cannot take the job; it stays queued.
+	if !slices.Contains(capacity.Projects, spec.Project) {
+		return false
+	}
 	for name, value := range spec.Constraints.Labels {
 		if capacity.Labels[name] != value {
 			return false
