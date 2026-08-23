@@ -257,12 +257,18 @@ func applyWorkerEvent(ctx context.Context, tx *sql.Tx, workerID string, event do
 
 func definedMetric(metrics []domain.MetricDefinition, name string, value float64) bool {
 	for _, metric := range metrics {
-		if metric.Name != name {
-			continue
+		if metric.Name == name {
+			return metricValueFits(metric, value)
 		}
-		return metric.Format != domain.MetricFormatPercent || (value >= 0 && value <= 1)
+	}
+	if metric, ok := domain.SystemMetricDefinition(name); ok {
+		return metricValueFits(metric, value)
 	}
 	return false
+}
+
+func metricValueFits(metric domain.MetricDefinition, value float64) bool {
+	return metric.Format != domain.MetricFormatPercent || (value >= 0 && value <= 1)
 }
 
 func appendControlEvent(ctx context.Context, tx *sql.Tx, kind, resourceID string, value any, now time.Time) error {

@@ -100,6 +100,7 @@ type MetricFormat string
 const (
 	MetricFormatNumber  MetricFormat = "number"
 	MetricFormatPercent MetricFormat = "percent"
+	MetricFormatBytes   MetricFormat = "bytes"
 )
 
 type MetricObjective string
@@ -125,6 +126,31 @@ type MetricReferenceLine struct {
 	Label string              `json:"label"`
 	Value float64             `json:"value"`
 	Kind  MetricReferenceKind `json:"kind"`
+}
+
+// SystemMetricPrefix marks series the worker reports automatically for every
+// attempt. Job specifications may not define metrics under this prefix.
+const SystemMetricPrefix = "lcjs/"
+
+// SystemMetricDefinitions describes the automatic per-attempt resource series.
+// GPU series are reported only for jobs that reserved GPUs, and only while the
+// worker can run nvidia-smi.
+func SystemMetricDefinitions() []MetricDefinition {
+	return []MetricDefinition{
+		{Name: SystemMetricPrefix + "gpu_util", DisplayName: "GPU utilization", Format: MetricFormatPercent},
+		{Name: SystemMetricPrefix + "gpu_mem_bytes", DisplayName: "GPU memory", Format: MetricFormatBytes},
+		{Name: SystemMetricPrefix + "rss_bytes", DisplayName: "Memory (RSS)", Format: MetricFormatBytes},
+	}
+}
+
+// SystemMetricDefinition returns the definition of one automatic series.
+func SystemMetricDefinition(name string) (MetricDefinition, bool) {
+	for _, definition := range SystemMetricDefinitions() {
+		if definition.Name == name {
+			return definition, true
+		}
+	}
+	return MetricDefinition{}, false
 }
 
 // MetricDefinition describes how one scalar series should be presented and
@@ -249,6 +275,8 @@ func (spec JobSpec) Validate() error {
 		path := fmt.Sprintf("metrics[%d]", i)
 		if !metricPattern.MatchString(metric.Name) {
 			errs = append(errs, fmt.Errorf("%s.name must contain 1 to 128 letters, numbers, dots, underscores, slashes, or hyphens", path))
+		} else if strings.HasPrefix(metric.Name, SystemMetricPrefix) {
+			errs = append(errs, fmt.Errorf("%s.name uses the reserved %s prefix", path, SystemMetricPrefix))
 		} else if _, exists := metricNames[metric.Name]; exists {
 			errs = append(errs, fmt.Errorf("%s.name %q is duplicated", path, metric.Name))
 		} else {
@@ -261,14 +289,14 @@ func (spec JobSpec) Validate() error {
 		if format == "" {
 			format = MetricFormatNumber
 		}
-		if format != MetricFormatNumber && format != MetricFormatPercent {
-			errs = append(errs, fmt.Errorf("%s.format must be %q or %q", path, MetricFormatNumber, MetricFormatPercent))
+		if format != MetricFormatNumber && format != MetricFormatPercent && format != MetricFormatBytes {
+			errs = append(errs, fmt.Errorf("%s.format must be %q, %q, or %q", path, MetricFormatNumber, MetricFormatPercent, MetricFormatBytes))
 		}
 		if len(metric.Unit) > 24 {
 			errs = append(errs, fmt.Errorf("%s.unit must be at most 24 characters", path))
 		}
-		if format == MetricFormatPercent && metric.Unit != "" {
-			errs = append(errs, fmt.Errorf("%s.unit must be empty when format is %q", path, MetricFormatPercent))
+		if format != MetricFormatNumber && metric.Unit != "" {
+			errs = append(errs, fmt.Errorf("%s.unit must be empty when format is %q", path, format))
 		}
 		if metric.Precision != nil && *metric.Precision > 9 {
 			errs = append(errs, fmt.Errorf("%s.precision must be between 0 and 9", path))

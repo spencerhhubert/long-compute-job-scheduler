@@ -34,6 +34,9 @@ type Agent struct {
 	store     *Store
 	sessionID string
 	client    *http.Client
+	// samplers tracks the per-attempt resource sampler goroutines. It is
+	// only touched from the agent's single cycle goroutine.
+	samplers map[string]context.CancelFunc
 }
 
 func New(ctx context.Context, config Config) (*Agent, error) {
@@ -64,7 +67,7 @@ func New(ctx context.Context, config Config) (*Agent, error) {
 	if client == nil {
 		client = &http.Client{Timeout: 30 * time.Second}
 	}
-	return &Agent{config: config, store: store, sessionID: sessionID, client: client}, nil
+	return &Agent{config: config, store: store, sessionID: sessionID, client: client, samplers: make(map[string]context.CancelFunc)}, nil
 }
 
 func (a *Agent) Close() error {

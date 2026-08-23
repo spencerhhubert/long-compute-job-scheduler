@@ -30,7 +30,9 @@ const (
 type Store interface {
 	CreateJob(context.Context, string, domain.JobSpec) (sqlitestore.CreateJobResult, error)
 	CancelJob(context.Context, string) (domain.Job, error)
+	GetJob(context.Context, string) (domain.Job, error)
 	GetJobDetail(context.Context, string) (domain.JobDetail, error)
+	ListJobMetricPoints(context.Context, string, int64) ([]sqlitestore.JobMetricPoint, int64, error)
 	ListJobs(context.Context, int) ([]domain.Job, error)
 	AuthenticateAPIToken(context.Context, string) (sqlitestore.APIToken, error)
 	CreateBrowserSession(context.Context, string, string, time.Time) error
@@ -59,15 +61,20 @@ func New(store Store, bootstrapToken string) (*Server, error) {
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET /{$}", s.home)
 	mux.HandleFunc("GET /jobs/{id}", s.jobPage)
+	mux.HandleFunc("GET /jobs/{id}/metrics.json", s.consoleJobMetrics)
 	mux.HandleFunc("GET /login", s.loginPage)
 	mux.HandleFunc("POST /login", s.login)
 	mux.HandleFunc("POST /logout", s.logout)
 	mux.HandleFunc("GET /static/app.css", serveStyles)
 	mux.HandleFunc("GET /static/theme.js", serveThemeScript)
+	mux.HandleFunc("GET /static/charts.js", serveStatic("charts.js", "text/javascript; charset=utf-8"))
+	mux.HandleFunc("GET /static/uplot.js", serveStatic("uplot.iife.min.js", "text/javascript; charset=utf-8"))
+	mux.HandleFunc("GET /static/uplot.css", serveStatic("uplot.min.css", "text/css; charset=utf-8"))
 	mux.HandleFunc("GET /healthz", s.health)
 	mux.Handle("POST /api/v1/jobs", s.authenticateAPI(http.HandlerFunc(s.createJob)))
 	mux.Handle("GET /api/v1/jobs", s.authenticateAPI(http.HandlerFunc(s.listJobs)))
 	mux.Handle("GET /api/v1/jobs/{id}", s.authenticateAPI(http.HandlerFunc(s.getJob)))
+	mux.Handle("GET /api/v1/jobs/{id}/metrics", s.authenticateAPI(http.HandlerFunc(s.writeJobMetrics)))
 	mux.Handle("POST /api/v1/jobs/{id}/cancel", s.authenticateAPI(http.HandlerFunc(s.cancelJob)))
 	mux.Handle("GET /api/v1/workers", s.authenticateAPI(http.HandlerFunc(s.listWorkers)))
 	mux.HandleFunc("POST /api/v1/worker/sync", s.workerSync)
@@ -163,11 +170,7 @@ func (s *Server) jobPage(response http.ResponseWriter, request *http.Request) {
 		http.Error(response, "the job could not be read", http.StatusInternalServerError)
 		return
 	}
-	renderPage(response, jobTemplate, jobDetailView{
-		TokenName: session.TokenName,
-		Detail:    detail,
-		Metrics:   buildMetricSeries(detail),
-	})
+	renderPage(response, jobTemplate, jobDetailView{TokenName: session.TokenName, Detail: detail})
 }
 
 func (s *Server) loginPage(response http.ResponseWriter, request *http.Request) {
