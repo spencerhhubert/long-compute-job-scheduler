@@ -44,7 +44,7 @@ Both sides use SQLite, but for different purposes:
 | Actual attempt state | Worker while connected to the attempt | Sent as ordered events |
 | Unacknowledged events and metrics | Worker outbox | Deleted only through an explicit cumulative acknowledgement |
 | Historical events and UI projections | Control plane | Written transactionally before acknowledgement |
-| Artifact bytes | Configured artifact store | Not placed in either SQLite database |
+| Artifact bytes | Configured artifact store | Only artifacts of at most 64 KiB of UTF-8 text are also copied into the control-plane database for preview |
 | Artifact metadata | Worker, then control plane | Identified by a stable artifact ID and relative location |
 
 Each worker has a stable ID and each agent start has a fresh session ID. Outbox
@@ -172,11 +172,12 @@ Database rows store a URI such as
 type, checksum, creation time, and optional checkpoint metadata. Absolute host
 paths never cross the protocol boundary.
 
-The dashboard lists artifacts from central metadata. Fetching large bytes is a
-separate, explicit transfer operation. A future transfer adapter may copy to an
-object store, establish a short-lived reverse transfer, or provide an
-operator-local retrieval command; ordinary page loads never touch artifact
-bytes.
+The dashboard lists artifacts from central metadata and previews small text
+artifacts (at most 64 KiB of valid UTF-8) whose content the worker inlined
+into its announcement. Fetching large bytes is a separate, explicit transfer
+operation. A future transfer adapter may copy to an object store, establish a
+short-lived reverse transfer, or provide an operator-local retrieval command;
+ordinary page loads never contact a worker.
 
 ## Telemetry and automated health policies
 
