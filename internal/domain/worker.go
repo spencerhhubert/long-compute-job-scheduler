@@ -54,7 +54,7 @@ const (
 	// without ending the attempt. A long run's artifacts are the main
 	// thing worth looking at while it is still going, and waiting until
 	// it finishes to announce them makes them useless for watching it.
-	WorkerEventArtifacts       WorkerEventKind = "artifacts"
+	WorkerEventArtifacts WorkerEventKind = "artifacts"
 )
 
 type MetricSample struct {
