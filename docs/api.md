@@ -37,6 +37,8 @@ Initial resources and operations:
 | `GET` | `/api/v1/jobs` | List jobs from the central projection |
 | `GET` | `/api/v1/jobs/{id}` | Read job, attempts, and recent events |
 | `GET` | `/api/v1/jobs/{id}/metrics` | Read metric series with an incremental cursor |
+| `GET` | `/api/v1/jobs/{id}/report` | Human-readable markdown summary of one job |
+| `GET` | `/api/v1/report` | The same, for every recent job, filtered by `project` |
 | `POST` | `/api/v1/jobs/{id}/cancel` | Set desired state to canceled |
 | `POST` | `/api/v1/jobs/{id}/retry` | Create a retry after policy validation |
 | `GET` | `/api/v1/workers` | List last-known worker state and resources |
@@ -167,6 +169,25 @@ The worker records commands before acknowledging them. Command IDs and event
 IDs are stable, so either side may repeat a lost response. The worker deletes
 outbox rows only through `accepted_through`; partial batch acceptance is valid.
 Payload size, event count, and sync duration are bounded.
+
+## Reports
+
+`GET /api/v1/jobs/{id}/report` returns `text/markdown` rather than JSON. It is
+for a reader that checks on a long run periodically and wants to be told what
+is happening, not handed a series to reduce itself. For every metric it gives
+the whole run, the recent window, the best value under the metric's own
+objective, and a trend that reads in the direction the objective cares about,
+so a falling minimise metric is reported as improving and a falling maximise
+metric as worsening. Every reference line declared in the job specification is
+turned into a distance and marked passed or not, again oriented by the
+objective. Worker telemetry under the reserved `lcjs/` prefix is summarised
+separately from the job's own metrics. Small text artifacts are inlined, which
+is how a run's current output can be read without fetching it separately; pass
+`?artifacts=none` to omit them.
+
+`GET /api/v1/report?project=NAME` lists recent jobs in a project, separated
+into active and finished, and inlines the full report for each running one.
+`limit` bounds how many jobs are considered.
 
 ## Metrics, logs, and artifacts
 

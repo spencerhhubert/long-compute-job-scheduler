@@ -77,6 +77,8 @@ func New(store Store, bootstrapToken string) (*Server, error) {
 	mux.Handle("GET /api/v1/jobs/{id}", s.authenticateAPI(http.HandlerFunc(s.getJob)))
 	mux.Handle("GET /api/v1/jobs/{id}/metrics", s.authenticateAPI(http.HandlerFunc(s.writeJobMetrics)))
 	mux.Handle("POST /api/v1/jobs/{id}/cancel", s.authenticateAPI(http.HandlerFunc(s.cancelJob)))
+	mux.Handle("GET /api/v1/jobs/{id}/report", s.authenticateAPI(http.HandlerFunc(s.jobReport)))
+	mux.Handle("GET /api/v1/report", s.authenticateAPI(http.HandlerFunc(s.projectReport)))
 	mux.Handle("GET /api/v1/workers", s.authenticateAPI(http.HandlerFunc(s.listWorkers)))
 	mux.HandleFunc("POST /api/v1/worker/sync", s.workerSync)
 	s.handler = mux
