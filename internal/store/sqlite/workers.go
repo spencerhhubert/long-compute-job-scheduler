@@ -107,7 +107,7 @@ func (s *Store) SyncWorker(ctx context.Context, workerID string, request domain.
 	}
 
 	for _, event := range request.Events {
-		if err := recordWorkerEvent(ctx, tx, workerID, event, now); err != nil {
+		if err := recordWorkerEvent(ctx, tx, workerID, request.SessionID, event, now); err != nil {
 			return domain.WorkerSyncResponse{}, err
 		}
 	}
@@ -119,7 +119,7 @@ func (s *Store) SyncWorker(ctx context.Context, workerID string, request domain.
 		return domain.WorkerSyncResponse{}, err
 	}
 	var acceptedThrough uint64
-	if err := tx.QueryRowContext(ctx, `SELECT COALESCE(MAX(sequence), 0) FROM worker_events WHERE worker_id = ?`, workerID).Scan(&acceptedThrough); err != nil {
+	if err := tx.QueryRowContext(ctx, `SELECT COALESCE(MAX(sequence), 0) FROM worker_events WHERE worker_id = ? AND session_id = ?`, workerID, request.SessionID).Scan(&acceptedThrough); err != nil {
 		return domain.WorkerSyncResponse{}, fmt.Errorf("read worker acknowledgement: %w", err)
 	}
 	if err := tx.Commit(); err != nil {
@@ -131,7 +131,7 @@ func (s *Store) SyncWorker(ctx context.Context, workerID string, request domain.
 	}, nil
 }
 
-func recordWorkerEvent(ctx context.Context, tx *sql.Tx, workerID string, event domain.WorkerEvent, recordedAt time.Time) error {
+func recordWorkerEvent(ctx context.Context, tx *sql.Tx, workerID, sessionID string, event domain.WorkerEvent, recordedAt time.Time) error {
 	if event.Sequence == 0 || event.EventID == "" || event.AttemptID == "" {
 		return errors.New("worker event requires sequence, event_id, and attempt_id")
 	}
@@ -140,9 +140,9 @@ func recordWorkerEvent(ctx context.Context, tx *sql.Tx, workerID string, event d
 		return fmt.Errorf("encode worker event: %w", err)
 	}
 	result, err := tx.ExecContext(ctx, `
-		INSERT OR IGNORE INTO worker_events(worker_id, sequence, event_id, attempt_id, kind, payload_json, occurred_at, recorded_at)
-		VALUES (?, ?, ?, ?, ?, ?, ?, ?)
-	`, workerID, event.Sequence, event.EventID, event.AttemptID, event.Kind, payload, formatTime(event.OccurredAt), formatTime(recordedAt))
+		INSERT OR IGNORE INTO worker_events(worker_id, session_id, sequence, event_id, attempt_id, kind, payload_json, occurred_at, recorded_at)
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+	`, workerID, sessionID, event.Sequence, event.EventID, event.AttemptID, event.Kind, payload, formatTime(event.OccurredAt), formatTime(recordedAt))
 	if err != nil {
 		return fmt.Errorf("record worker event: %w", err)
 	}
@@ -152,7 +152,7 @@ func recordWorkerEvent(ctx context.Context, tx *sql.Tx, workerID string, event d
 	}
 	if inserted == 0 {
 		var existing string
-		if err := tx.QueryRowContext(ctx, `SELECT event_id FROM worker_events WHERE worker_id = ? AND sequence = ?`, workerID, event.Sequence).Scan(&existing); err != nil {
+		if err := tx.QueryRowContext(ctx, `SELECT event_id FROM worker_events WHERE worker_id = ? AND session_id = ? AND sequence = ?`, workerID, sessionID, event.Sequence).Scan(&existing); err != nil {
 			return fmt.Errorf("read duplicate worker event: %w", err)
 		}
 		if existing != event.EventID {

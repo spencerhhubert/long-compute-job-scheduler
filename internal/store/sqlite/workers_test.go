@@ -163,3 +163,53 @@ func TestWorkerSchedulingHonorsProjectsLabelsAndParallelCapacity(t *testing.T) {
 		t.Fatalf("commands = %d, want 2", len(response.Commands))
 	}
 }
+
+func TestWorkerSyncNewSessionRestartsEventSequences(t *testing.T) {
+	ctx := context.Background()
+	store, err := Open(ctx, filepath.Join(t.TempDir(), "control.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer store.Close()
+	now := time.Date(2026, time.August, 23, 2, 0, 0, 0, time.UTC)
+	store.now = func() time.Time { return now }
+
+	credential, err := store.CreateWorker(ctx, "worker-1", "lcjw_0123456789abcdef0123456789abcdef0123456789abc", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	run := func(session, jobKey, eventPrefix string) {
+		created, err := store.CreateJob(ctx, jobKey, testSpec())
+		if err != nil {
+			t.Fatal(err)
+		}
+		request := domain.WorkerSyncRequest{
+			WorkerID: credential.WorkerID, SessionID: session, AgentVersion: "test",
+			Capacity: domain.WorkerCapacity{CPU: 4, MaxParallel: 1, Projects: []string{"example-research"}},
+		}
+		offered, err := store.SyncWorker(ctx, credential.WorkerID, request)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if len(offered.Commands) != 1 || offered.Commands[0].Job.ID != created.Job.ID {
+			t.Fatalf("session %s offer = %+v", session, offered.Commands)
+		}
+		exitCode := 0
+		attemptID := offered.Commands[0].AttemptID
+		// A fresh agent session restarts its durable outbox at sequence 1.
+		request.Events = []domain.WorkerEvent{
+			{Sequence: 1, EventID: eventPrefix + "-accepted", AttemptID: attemptID, Kind: domain.WorkerEventAttemptAccepted, OccurredAt: now},
+			{Sequence: 2, EventID: eventPrefix + "-started", AttemptID: attemptID, Kind: domain.WorkerEventAttemptStarted, OccurredAt: now},
+			{Sequence: 3, EventID: eventPrefix + "-finished", AttemptID: attemptID, Kind: domain.WorkerEventAttemptFinished, OccurredAt: now, ExitCode: &exitCode},
+		}
+		finished, err := store.SyncWorker(ctx, credential.WorkerID, request)
+		if err != nil {
+			t.Fatalf("session %s events: %v", session, err)
+		}
+		if finished.AcceptedThrough != 3 {
+			t.Fatalf("session %s accepted through = %d, want 3", session, finished.AcceptedThrough)
+		}
+	}
+	run("session-1", "seq-job-1", "one")
+	run("session-2", "seq-job-2", "two")
+}
