@@ -3,6 +3,7 @@
 package httpapi
 
 import (
+	"log/slog"
 	"context"
 	"crypto/rand"
 	"crypto/sha256"
@@ -381,6 +382,7 @@ func (s *Server) workerSync(response http.ResponseWriter, request *http.Request)
 	}
 	syncResponse, err := s.store.SyncWorker(request.Context(), credential.WorkerID, syncRequest)
 	if err != nil {
+		slog.Error("worker sync failed", "worker_id", credential.WorkerID, "events", len(syncRequest.Events), "error", err)
 		writeError(response, http.StatusInternalServerError, "internal", "worker sync could not be applied")
 		return
 	}
