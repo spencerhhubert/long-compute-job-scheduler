@@ -1,9 +1,11 @@
 # Submitting ML jobs
 
 This is the shortest handoff for an operator or agent preparing a batch of
-experiments. A native job currently identifies a Git repository, an exact full
-commit SHA, and an argv command. Datasets, caches, checkpoints, and results do
-not need to be committed to Git.
+experiments. A job names a project and an argv command. It runs in the project
+directory the assigned worker maps to that project name, so datasets, caches,
+virtual environments, checkpoints, and results live where that machine already
+keeps them. The git state of the directory (commit, branch, dirty flag) is
+recorded on every attempt.
 
 ## 1. Install credentials
 
@@ -26,10 +28,6 @@ Save a document such as `experiment-a.json`:
   "project": "vision-study",
   "name": "resnet-seed-01",
   "priority": 0,
-  "source": {
-    "git_url": "https://github.com/example/vision-study.git",
-    "commit": "0123456789abcdef0123456789abcdef01234567"
-  },
   "command": ["python3", "train.py", "--config", "configs/a.toml", "--seed", "1"],
   "environment": {"PYTHONUNBUFFERED": "1"},
   "resources": {
@@ -74,9 +72,21 @@ Save a document such as `experiment-a.json`:
 }
 ```
 
-`source.commit` must be the full immutable object ID, not a branch name. The
-worker checks it out in an isolated attempt directory before starting the
-command.
+`project` decides where the job runs: only workers that map a directory for
+that project name are offered the job, and the command's working directory is
+that mapped directory.
+
+To pin the exact revision, add an optional source:
+
+```json
+"source": {"commit": "0123456789abcdef0123456789abcdef01234567"}
+```
+
+The value must be the full immutable object ID, not a branch name. The worker
+checks it out before starting the command, and only when the project directory
+is a clean git tree; otherwise the attempt fails. Without a pin the job runs
+at whatever state the directory is in, and the recorded git state on the
+attempt tells you what that was.
 
 ## 3. Report metrics from training
 
@@ -115,8 +125,8 @@ loop; the scheduler owns queuing, capacity reservations, and worker placement.
 
 ## Current boundaries
 
-- Git/native-process execution is working; OCI images and arbitrary directory
-  uploads are not.
+- Native-process execution in worker project directories is working; OCI
+  images and arbitrary directory uploads are not.
 - Metrics, recent logs, and filesystem artifacts are centrally visible.
 - Agent restart recovery is verified. Machine-reboot checkpoint resume is not
   complete yet, so `lost_worker: "manual"` is the conservative choice for

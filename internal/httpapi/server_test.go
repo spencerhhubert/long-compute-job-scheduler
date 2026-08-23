@@ -63,7 +63,7 @@ func TestConsoleLoginPersistsSecureSessionAndShowsJobState(t *testing.T) {
 	}
 	if _, err := store.SyncWorker(context.Background(), worker.WorkerID, domain.WorkerSyncRequest{
 		WorkerID: worker.WorkerID, SessionID: "dashboard-session", AgentVersion: "test-sha",
-		Capacity: domain.WorkerCapacity{CPU: 4, MaxParallel: 1, Labels: map[string]string{"host": "gpu-worker-1"}},
+		Capacity: domain.WorkerCapacity{CPU: 4, MaxParallel: 1, Labels: map[string]string{"host": "gpu-worker-1"}, Projects: []string{"example-research"}},
 	}); err != nil {
 		t.Fatal(err)
 	}
@@ -277,7 +277,7 @@ func TestWorkerSyncUsesWorkerBoundToken(t *testing.T) {
 	}
 	syncBody, err := json.Marshal(domain.WorkerSyncRequest{
 		WorkerID: credential.WorkerID, SessionID: "session-test", AgentVersion: "test",
-		Capacity: domain.WorkerCapacity{CPU: 4, MaxParallel: 1},
+		Capacity: domain.WorkerCapacity{CPU: 4, MaxParallel: 1, Projects: []string{"example-research"}},
 	})
 	if err != nil {
 		t.Fatal(err)

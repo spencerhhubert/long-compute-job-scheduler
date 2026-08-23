@@ -42,7 +42,7 @@ func TestWorkerSyncDispatchesAndCompletesJobIdempotently(t *testing.T) {
 
 	request := domain.WorkerSyncRequest{
 		WorkerID: credential.WorkerID, SessionID: "session-1", AgentVersion: "test",
-		Capacity: domain.WorkerCapacity{CPU: 4, MemoryBytes: 8 << 30, MaxParallel: 1, Labels: map[string]string{"os": "linux"}},
+		Capacity: domain.WorkerCapacity{CPU: 4, MemoryBytes: 8 << 30, MaxParallel: 1, Labels: map[string]string{"os": "linux"}, Projects: []string{"example-research"}},
 	}
 	first, err := store.SyncWorker(ctx, credential.WorkerID, request)
 	if err != nil {
@@ -62,9 +62,10 @@ func TestWorkerSyncDispatchesAndCompletesJobIdempotently(t *testing.T) {
 
 	exitCode := 0
 	step := int64(10)
+	gitState := &domain.GitState{Commit: "0123456789abcdef0123456789abcdef01234567", Branch: "main", Dirty: true}
 	request.Events = []domain.WorkerEvent{
 		{Sequence: 1, EventID: "event-accepted", AttemptID: command.AttemptID, Kind: domain.WorkerEventAttemptAccepted, OccurredAt: now.Add(time.Second)},
-		{Sequence: 2, EventID: "event-started", AttemptID: command.AttemptID, Kind: domain.WorkerEventAttemptStarted, OccurredAt: now.Add(2 * time.Second)},
+		{Sequence: 2, EventID: "event-started", AttemptID: command.AttemptID, Kind: domain.WorkerEventAttemptStarted, OccurredAt: now.Add(2 * time.Second), Git: gitState},
 		{Sequence: 3, EventID: "event-metric", AttemptID: command.AttemptID, Kind: domain.WorkerEventMetricSample, OccurredAt: now.Add(3 * time.Second), Metric: &domain.MetricSample{Name: "validation/accuracy", Value: 0.91, Step: &step, ObservedAt: now.Add(3 * time.Second)}},
 		{Sequence: 4, EventID: "event-finished", AttemptID: command.AttemptID, Kind: domain.WorkerEventAttemptFinished, OccurredAt: now.Add(4 * time.Second), ExitCode: &exitCode, LogURI: "worker://worker-1/job/attempt/log", LogTail: "training complete\n", Artifacts: []domain.ArtifactAnnouncement{{Name: "result", URI: "worker://worker-1/job/attempt/result", SizeBytes: 12, SHA256: "abc"}}},
 	}
@@ -91,6 +92,9 @@ func TestWorkerSyncDispatchesAndCompletesJobIdempotently(t *testing.T) {
 	}
 	if detail.Attempts[0].LogTail != "training complete\n" {
 		t.Fatalf("log tail = %q", detail.Attempts[0].LogTail)
+	}
+	if got := detail.Attempts[0].Git; got == nil || *got != *gitState {
+		t.Fatalf("recorded git state = %+v, want %+v", got, gitState)
 	}
 	if len(detail.Metrics) != 1 || detail.Metrics[0].Name != "validation/accuracy" || detail.Metrics[0].Value != 0.91 {
 		t.Fatalf("metrics = %+v, want recorded accuracy", detail.Metrics)
@@ -119,7 +123,7 @@ func TestWorkerSyncDispatchesAndCompletesJobIdempotently(t *testing.T) {
 	}
 }
 
-func TestWorkerSchedulingHonorsLabelsAndParallelCapacity(t *testing.T) {
+func TestWorkerSchedulingHonorsProjectsLabelsAndParallelCapacity(t *testing.T) {
 	ctx := context.Background()
 	store, err := Open(ctx, filepath.Join(t.TempDir(), "control.db"))
 	if err != nil {
@@ -139,10 +143,19 @@ func TestWorkerSchedulingHonorsLabelsAndParallelCapacity(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
-	response, err := store.SyncWorker(ctx, credential.WorkerID, domain.WorkerSyncRequest{
+	request := domain.WorkerSyncRequest{
 		WorkerID: credential.WorkerID, SessionID: "session", AgentVersion: "test",
-		Capacity: domain.WorkerCapacity{CPU: 8, MaxParallel: 2},
-	})
+		Capacity: domain.WorkerCapacity{CPU: 8, MaxParallel: 2, Projects: []string{"another-project"}},
+	}
+	unmapped, err := store.SyncWorker(ctx, credential.WorkerID, request)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(unmapped.Commands) != 0 {
+		t.Fatalf("commands for a worker without the project = %d, want 0", len(unmapped.Commands))
+	}
+	request.Capacity.Projects = []string{"another-project", "example-research"}
+	response, err := store.SyncWorker(ctx, credential.WorkerID, request)
 	if err != nil {
 		t.Fatal(err)
 	}

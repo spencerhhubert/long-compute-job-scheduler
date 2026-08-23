@@ -40,6 +40,12 @@ var pageFunctions = template.FuncMap{
 		}
 		return strings.Join(parts, " ")
 	},
+	"shortCommit": func(commit string) string {
+		if len(commit) > 12 {
+			return commit[:12]
+		}
+		return commit
+	},
 	"resources": func(request domain.ResourceRequest) string {
 		parts := make([]string, 0, 3)
 		if request.CPU > 0 {
@@ -315,7 +321,7 @@ var jobTemplate = template.Must(template.New("job").Funcs(pageFunctions).Parse(`
       <div class="panel-header"><h2 id="spec-title">Execution</h2><span>revision {{.Detail.Job.Revision}}</span></div>
       <dl class="detail-grid">
         <div><dt>Command</dt><dd><code>{{command .Detail.Job.Spec.Command}}</code></dd></div>
-        <div><dt>Source</dt><dd><code>{{.Detail.Job.Spec.Source.GitURL}}</code><small>{{.Detail.Job.Spec.Source.Commit}}</small></dd></div>
+        <div><dt>Source</dt><dd>{{if .Detail.Job.Spec.Source.Commit}}<code>{{shortCommit .Detail.Job.Spec.Source.Commit}}</code><small>pinned commit</small>{{else}}Worker project directory<small>git state recorded per attempt</small>{{end}}</dd></div>
         <div><dt>Resources</dt><dd>{{resources .Detail.Job.Spec.Resources}}</dd></div>
         <div><dt>Created</dt><dd>{{jobTime .Detail.Job.CreatedAt}}</dd></div>
       </dl>
@@ -324,15 +330,16 @@ var jobTemplate = template.Must(template.New("job").Funcs(pageFunctions).Parse(`
     <section class="panel" aria-labelledby="attempts-title">
       <div class="panel-header"><h2 id="attempts-title">Attempts</h2><span>{{len .Detail.Attempts}} total</span></div>
       <div class="table-scroll"><table>
-        <thead><tr><th>#</th><th>State</th><th>Worker</th><th>Started</th><th>Finished</th><th>Exit</th><th>Log</th><th>Error</th></tr></thead>
+        <thead><tr><th>#</th><th>State</th><th>Worker</th><th>Git state</th><th>Started</th><th>Finished</th><th>Exit</th><th>Log</th><th>Error</th></tr></thead>
         <tbody>{{range .Detail.Attempts}}<tr>
           <td class="numeric">{{.AttemptNumber}}</td>
           <td><span class="state" data-state="{{.State}}">{{.State}}</span><small>{{.ID}}</small></td>
           <td><small class="wide">{{.WorkerID}}</small></td>
+          <td>{{with .Git}}<code title="{{.Commit}}">{{shortCommit .Commit}}</code><small>{{if .Branch}}{{.Branch}}{{else}}detached{{end}}{{if .Dirty}} · dirty{{end}}</small>{{else}}—{{end}}</td>
           <td>{{optionalTime .StartedAt}}</td><td>{{optionalTime .FinishedAt}}</td><td class="numeric">{{exitCode .ExitCode}}</td>
           <td><small class="wide" title="{{.LogURI}}">{{if .LogURI}}{{.LogURI}}{{else}}—{{end}}</small></td>
           <td class="error-cell">{{if .Error}}{{.Error}}{{else}}—{{end}}</td>
-        </tr>{{else}}<tr><td class="empty" colspan="8">No attempt has been assigned.</td></tr>{{end}}</tbody>
+        </tr>{{else}}<tr><td class="empty" colspan="9">No attempt has been assigned.</td></tr>{{end}}</tbody>
       </table></div>
       {{range .Detail.Attempts}}{{if .LogTail}}<details class="log-tail" open><summary>Attempt {{.AttemptNumber}} recent log (last 64 KiB)</summary><pre>{{.LogTail}}</pre></details>{{end}}{{end}}
     </section>

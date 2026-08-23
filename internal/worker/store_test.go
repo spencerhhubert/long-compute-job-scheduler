@@ -32,7 +32,8 @@ func TestStorePersistsCommandsAndOutboxAcrossRestart(t *testing.T) {
 	if len(events) != 1 || events[0].Sequence != 1 || events[0].Kind != domain.WorkerEventAttemptAccepted {
 		t.Fatalf("accepted events = %+v", events)
 	}
-	if err := store.MarkStarted(ctx, command.CommandID, 123, "/work", "/status", "/metrics"); err != nil {
+	gitState := &domain.GitState{Commit: "0123456789abcdef0123456789abcdef01234567", Branch: "main"}
+	if err := store.MarkStarted(ctx, command.CommandID, 123, "/work", "/status", "/metrics", gitState); err != nil {
 		t.Fatal(err)
 	}
 	step := int64(4)
@@ -61,6 +62,9 @@ func TestStorePersistsCommandsAndOutboxAcrossRestart(t *testing.T) {
 	}
 	if len(events) != 3 || events[2].Kind != domain.WorkerEventMetricSample {
 		t.Fatalf("persisted events = %+v", events)
+	}
+	if events[1].Kind != domain.WorkerEventAttemptStarted || events[1].Git == nil || *events[1].Git != *gitState {
+		t.Fatalf("started event = %+v, want recorded git state %+v", events[1], gitState)
 	}
 	if err := reopened.Acknowledge(ctx, 2); err != nil {
 		t.Fatal(err)

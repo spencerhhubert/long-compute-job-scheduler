@@ -43,7 +43,7 @@ func TestHealthPoliciesEnqueueDurableWebhookExactlyOnce(t *testing.T) {
 	}
 	request := domain.WorkerSyncRequest{
 		WorkerID: credential.WorkerID, SessionID: "health-session", AgentVersion: "test",
-		Capacity: domain.WorkerCapacity{CPU: 4, MaxParallel: 1},
+		Capacity: domain.WorkerCapacity{CPU: 4, MaxParallel: 1, Projects: []string{"example-research"}},
 	}
 	offer, err := store.SyncWorker(ctx, credential.WorkerID, request)
 	if err != nil || len(offer.Commands) != 1 {

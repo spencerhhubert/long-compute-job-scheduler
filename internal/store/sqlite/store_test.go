@@ -5,7 +5,6 @@ import (
 	"crypto/sha256"
 	"errors"
 	"path/filepath"
-	"strings"
 	"testing"
 	"time"
 
@@ -17,10 +16,6 @@ func testSpec() domain.JobSpec {
 	return domain.JobSpec{
 		Project: "example-research",
 		Name:    "train-baseline",
-		Source: domain.Source{
-			GitURL: "https://github.com/example/research.git",
-			Commit: strings.Repeat("a", 40),
-		},
 		Command: []string{"python", "train.py"},
 		Retry: domain.RetryPolicy{
 			MaxAttempts: 1,

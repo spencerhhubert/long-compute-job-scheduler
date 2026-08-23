@@ -36,7 +36,8 @@ an ordered central history and no lost accepted events.
 
 ## 3. Reproducibility, artifacts, and checkpoints
 
-- Immutable git revision materialization and execution manifests
+- Recorded per-attempt git state and optional pinned-commit checkout in
+  worker project directories
 - Configurable filesystem artifact store and portable artifact URIs
 - Checksummed artifact discovery and retention
 - Job-defined checkpoint and resume flow

@@ -29,7 +29,7 @@ func TestListJobMetricPointsUsesIncrementalCursor(t *testing.T) {
 	}
 	request := domain.WorkerSyncRequest{
 		WorkerID: credential.WorkerID, SessionID: "session-1", AgentVersion: "test",
-		Capacity: domain.WorkerCapacity{CPU: 4, MaxParallel: 1},
+		Capacity: domain.WorkerCapacity{CPU: 4, MaxParallel: 1, Projects: []string{"example-research"}},
 	}
 	offered, err := store.SyncWorker(ctx, credential.WorkerID, request)
 	if err != nil {

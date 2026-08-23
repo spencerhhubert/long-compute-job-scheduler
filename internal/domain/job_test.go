@@ -9,10 +9,6 @@ func validSpec() JobSpec {
 	return JobSpec{
 		Project: "example-research",
 		Name:    "train-baseline",
-		Source: Source{
-			GitURL: "https://github.com/example/research.git",
-			Commit: strings.Repeat("a", 40),
-		},
 		Command: []string{"python", "train.py"},
 		Resources: ResourceRequest{GPUs: []GPURequest{{
 			Count:   1,
@@ -60,19 +56,46 @@ func TestJobSpecValidateRejectsInvalidHealthPolicy(t *testing.T) {
 	}
 }
 
-func TestJobSpecValidateRejectsAmbiguousSourceAndReservedEnvironment(t *testing.T) {
+func TestJobSpecValidateAcceptsOptionalPinnedSource(t *testing.T) {
 	spec := validSpec()
-	spec.Source.OCIImage = "registry.example.com/research@sha256:abc"
+	if err := spec.Validate(); err != nil {
+		t.Fatalf("spec without source: %v", err)
+	}
+	spec.Source = Source{
+		GitURL: "https://github.com/example/research.git",
+		Commit: strings.Repeat("a", 40),
+	}
+	if err := spec.Validate(); err != nil {
+		t.Fatalf("spec with pinned source: %v", err)
+	}
+	spec.Source = Source{Commit: strings.Repeat("b", 40)}
+	if err := spec.Validate(); err != nil {
+		t.Fatalf("spec with pinned commit only: %v", err)
+	}
+}
+
+func TestJobSpecValidateRejectsInvalidSourceAndReservedEnvironment(t *testing.T) {
+	spec := validSpec()
+	spec.Source = Source{
+		GitURL:   "https://github.com/example/research.git",
+		OCIImage: "registry.example.com/research@sha256:abc",
+	}
 	spec.Environment = map[string]string{"LCJS_TOKEN": "do-not-store-this"}
 
 	err := spec.Validate()
 	if err == nil {
 		t.Fatal("expected validation error")
 	}
-	for _, want := range []string{"exactly one", "reserved LCJS_"} {
+	for _, want := range []string{"may not combine", "source.commit is required", "reserved LCJS_"} {
 		if !strings.Contains(err.Error(), want) {
 			t.Errorf("error %q does not contain %q", err, want)
 		}
+	}
+
+	partial := validSpec()
+	partial.Source = Source{Commit: "abc123"}
+	if err := partial.Validate(); err == nil || !strings.Contains(err.Error(), "hexadecimal object ID") {
+		t.Fatalf("error = %v, want short commit rejection", err)
 	}
 }
 

@@ -58,9 +58,10 @@ copies of a live multi-file database.
 
 ## Job and attempt model
 
-A **job** is the durable user request: source revision, command, resource
-request, environment references, retry policy, artifact rules, and health
-policies. An **attempt** is one execution of that job on one worker.
+A **job** is the durable user request: project, command, optional pinned
+revision, resource request, environment references, retry policy, artifact
+rules, and health policies. An **attempt** is one execution of that job on one
+worker.
 
 Job state:
 
@@ -129,18 +130,23 @@ single-worker execution slice.
 
 ## Execution and deployment
 
-The portable job specification identifies immutable inputs where practical:
+The portable job specification identifies:
 
-- repository URL and commit SHA, or an OCI image digest
-- working directory and command/arguments
+- the project, which selects the worker directory the job runs in
+- command/arguments and environment values
+- an optional pinned commit to check out before running
 - named secret references, never secret values
 - requested resources and worker constraints
 - checkpoint, artifact, telemetry, and retry behavior
 
-The initial native executor creates an isolated working directory, materializes
-the source revision, writes a redacted execution manifest, and starts a process
-group. Container and provider-specific executors can be added without changing
-the scheduler protocol.
+Workers map project names to local directories and advertise those names; the
+scheduler offers a job only to workers advertising its project. The native
+executor starts a supervised process group directly in the project directory,
+as the agent's own OS user, and records the directory's git state (commit,
+branch, dirty flag) on the attempt. Reproducibility is observed and recorded
+rather than enforced; a pinned commit is checked out only when the directory
+is a clean git tree. Container and provider-specific executors can be added
+without changing the scheduler protocol.
 
 Agent restart and machine restart are separate cases. A worker may reattach to
 a still-running supervised process after its own restart. Following a machine

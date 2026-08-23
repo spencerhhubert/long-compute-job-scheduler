@@ -12,6 +12,7 @@ import (
 	"net/http"
 	"os"
 	"os/signal"
+	"path/filepath"
 	"runtime"
 	"strings"
 	"syscall"
@@ -147,6 +148,30 @@ func (labels *labelFlags) Set(raw string) error {
 	return nil
 }
 
+type projectFlags map[string]string
+
+func (projects *projectFlags) String() string {
+	parts := make([]string, 0, len(*projects))
+	for name, directory := range *projects {
+		parts = append(parts, name+"="+directory)
+	}
+	return strings.Join(parts, ",")
+}
+
+func (projects *projectFlags) Set(raw string) error {
+	name, directory, found := strings.Cut(raw, "=")
+	name = strings.TrimSpace(name)
+	directory = strings.TrimSpace(directory)
+	if !found || name == "" || !filepath.IsAbs(directory) {
+		return errors.New("projects must use name=/absolute/path")
+	}
+	if *projects == nil {
+		*projects = make(map[string]string)
+	}
+	(*projects)[name] = directory
+	return nil
+}
+
 func runWorker(arguments []string) error {
 	if len(arguments) == 0 {
 		return errors.New("usage: lcjs worker <create|run>")
@@ -197,8 +222,9 @@ func runWorkerAgent(arguments []string) error {
 	flags := flag.NewFlagSet("worker run", flag.ContinueOnError)
 	serverURL := flags.String("server", "", "HTTPS control-plane URL")
 	database := flags.String("db", "data/worker.db", "worker SQLite database path")
-	workRoot := flags.String("work-root", "data/work", "isolated job work root")
 	artifactRoot := flags.String("artifact-root", "data/artifacts", "artifact storage root")
+	var projects projectFlags
+	flags.Var(&projects, "project", "project directory in name=/absolute/path form; repeatable")
 	cpu := flags.Uint("cpu", uint(runtime.NumCPU()), "allocatable logical CPUs")
 	memoryBytes := flags.Uint64("memory-bytes", 0, "allocatable memory bytes; zero is unspecified")
 	gpus := flags.Uint("gpus", 0, "allocatable physical GPUs")
@@ -210,7 +236,7 @@ func runWorkerAgent(arguments []string) error {
 		return err
 	}
 	if flags.NArg() != 0 || *serverURL == "" {
-		return errors.New("usage: lcjs worker run --server URL [--db PATH] [--work-root PATH] [--artifact-root PATH]")
+		return errors.New("usage: lcjs worker run --server URL --project name=/absolute/path [--db PATH] [--artifact-root PATH]")
 	}
 	workerID := os.Getenv("LCJS_WORKER_ID")
 	token := os.Getenv("LCJS_WORKER_TOKEN")
@@ -218,7 +244,7 @@ func runWorkerAgent(arguments []string) error {
 	defer stop()
 	agent, err := workeragent.New(ctx, workeragent.Config{
 		ServerURL: *serverURL, WorkerID: workerID, Token: token, Version: version,
-		DatabasePath: *database, WorkRoot: *workRoot, ArtifactRoot: *artifactRoot,
+		DatabasePath: *database, ArtifactRoot: *artifactRoot, Projects: projects,
 		Capacity: domain.WorkerCapacity{
 			CPU: uint32(*cpu), MemoryBytes: *memoryBytes, GPUCount: uint32(*gpus),
 			GPUSharedSlots: uint32(*gpuSharedSlots), MaxParallel: uint32(*maxParallel), Labels: labels,
