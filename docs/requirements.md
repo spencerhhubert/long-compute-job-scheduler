@@ -28,7 +28,7 @@ Status key:
 | Durable job queue | Verified | A public-API fixture was assigned once and transitioned queued → running → succeeded |
 | Outbound worker communication | Verified | A private worker connected outward over public HTTPS and received work without an inbound port or VPN |
 | Worker-local SQLite inbox/outbox | Verified | Commands, metric offsets, and events persisted locally; acknowledged events drained only after central commit |
-| Automatic source deployment/materialization | Verified | Worker fetched and checked out the requested full commit in an isolated attempt directory |
+| Direct execution in project directories with recorded git state | Partial | Scheduling, git-state recording, and pinned-checkout rules have unit coverage; a live job under the new model has not been re-verified |
 | Actual command execution and state reporting | Verified | Submitted fixtures reported start, exit code 0, metrics, artifacts, and terminal success |
 | Restart and machine-loss recovery | Partial | A live supervisor survived an agent service restart and the new agent reported completion; reboot/lost-machine policy and checkpoint resume remain |
 | Multiple workers and temporary cloud nodes | Missing | Same protocol successfully dispatches to two heterogeneous workers |
@@ -57,10 +57,13 @@ Status key:
 
 ## Current honest capability
 
-The deployed service now assigns and executes native Git-based jobs on an
-outbound worker, durably reports attempts, metrics, bounded logs, health-policy
-events, and filesystem artifacts, and renders those results in the job detail
-UI. The working path has survived an in-flight agent restart. Periodic and
+The deployed service now assigns native jobs to an outbound worker, which runs
+them directly in its mapped project directories and records the observed git
+state per attempt; it durably reports attempts, metrics, bounded logs,
+health-policy events, and filesystem artifacts, and renders those results in
+the job detail UI. The clone-and-execute path survived an in-flight agent
+restart before this model replaced it; the direct path has not been
+re-verified live. Periodic and
 metric-flatline policies can deliver durable signed notifications to named
 webhook targets. The missing and partial rows above remain real limitations;
 in particular, machine-loss/checkpoint recovery, automatic cancel/retry health

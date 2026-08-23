@@ -50,10 +50,6 @@ Example job submission:
   "project": "example-research",
   "name": "train-baseline",
   "priority": 0,
-  "source": {
-    "git_url": "https://github.com/example/research.git",
-    "commit": "0123456789abcdef0123456789abcdef01234567"
-  },
   "command": ["python", "train.py", "--config", "baseline.toml"],
   "resources": {
     "cpu": 4,
@@ -93,6 +89,14 @@ Example job submission:
 The stored spec is immutable. Cancel, retry, priority changes, and policy
 overrides are separate commands with audit events.
 
+A job runs in the directory the assigned worker maps to its `project`; only
+workers advertising that project are offered the job. An optional
+`source` object of the form `{"commit": "<full object ID>", "git_url": "..."}`
+pins the revision; without it the job runs at the directory's current state.
+Each attempt in the job detail response carries a `git` object with the
+`commit`, `branch`, and `dirty` flag the worker observed at attempt start, or
+no `git` object when the directory is not a git repository.
+
 ## Worker enrollment
 
 An operator mints a one-use, expiring enrollment token constrained by optional
@@ -113,8 +117,9 @@ authenticated operation.
 POST /api/v1/worker/sync
 ```
 
-One request carries a resource snapshot, lease renewals, and a bounded ordered
-batch from the local outbox:
+One request carries a resource snapshot (including the worker's advertised
+project names, which constrain which jobs it can be offered), lease renewals,
+and a bounded ordered batch from the local outbox:
 
 ```json
 {

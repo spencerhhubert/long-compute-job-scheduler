@@ -4,11 +4,12 @@ Workers connect outbound to the control plane over HTTPS. They require no
 inbound port and no VPN. Each worker has a credential bound to its worker ID;
 that credential cannot call operator APIs.
 
-Status: this is the first native-executor slice. It supports immutable Git
-revisions, argv commands, environment values, scalar metrics, logs, filesystem
-artifacts, conservative CPU/memory/GPU reservations, and durable local command
-and event queues. OCI images, secret providers, cancellation, and remote
-artifact transfer remain unimplemented and are tracked in
+Status: the native executor runs jobs directly in per-project worker
+directories. It supports argv commands, environment values, optional pinned
+git commits, recorded git state, scalar metrics, logs, filesystem artifacts,
+conservative CPU/memory/GPU reservations, and durable local command and event
+queues. OCI images, secret providers, cancellation, and remote artifact
+transfer remain unimplemented and are tracked in
 [the requirements checklist](requirements.md).
 
 ## Provision a credential
@@ -27,16 +28,39 @@ The command prints `LCJS_WORKER_ID` and `LCJS_WORKER_TOKEN` exactly once. Put
 those two lines in `/etc/lcjs-worker/worker.env`, owned by root with mode 0600.
 The database stores only the token hash.
 
-## Run the agent
+## Project directories
 
-Create a dedicated service user and two writable roots: a smaller state/work
-root and the configured large artifact root. Install the CI-built `lcjs` binary
-and adapt [`deploy/lcjs-worker.service`](../deploy/lcjs-worker.service), in
-particular the control URL, resource flags, labels, and paths.
-
-Useful resource flags are:
+The agent runs each job in a directory it already has for that job's project,
+declared with a repeatable flag:
 
 ```text
+--project example-research=/srv/projects/example-research
+```
+
+The name is the job spec's `project`; the path is an absolute directory on the
+worker. The agent advertises its project names to the control plane, and a job
+is only ever offered to a worker that advertises its project. A job whose
+project no worker advertises stays queued until one does; it does not fail.
+
+Attempts execute with the project directory as the working directory, as the
+OS user the agent runs as, inheriting the agent's process environment plus the
+job's `environment` overlay. Nothing is cloned or copied: the directory is
+whatever checkout, virtual environment, and data layout that machine already
+uses for the project.
+
+## Run the agent
+
+Choose the user the agent should run as: attempts run as that user and use its
+environment, so it must own or share the project directories. Give it a
+writable state directory and the configured large artifact root. Install the
+CI-built `lcjs` binary and adapt
+[`deploy/lcjs-worker.service`](../deploy/lcjs-worker.service), in particular
+the control URL, project directories, resource flags, labels, and paths.
+
+Useful flags are:
+
+```text
+--project name=/absolute/path
 --cpu N
 --memory-bytes N
 --gpus N
@@ -59,9 +83,20 @@ policy decides whether to create a new attempt.
 
 ## Job runtime contract
 
-The worker initializes an isolated directory, fetches the exact full Git object
-ID, checks out detached `FETCH_HEAD`, and executes the command as an argv array
-without a shell. It supplies:
+The worker executes the command as an argv array without a shell, in the
+project directory. At attempt start it records the directory's git state into
+the attempt: the current `HEAD`, the branch name (empty when detached), and a
+dirty flag covering uncommitted changes to tracked files. The job API returns
+this state and the console shows it. Reproducibility is recorded, not
+enforced.
+
+If the job spec pins a `source.commit`, the worker checks that commit out
+first, and only when the project directory is a clean git tree; a dirty tree,
+a missing repository, or an unknown commit fails the attempt with a clear
+error. With a `source.git_url` the worker fetches the commit from that URL
+when it is not already present locally.
+
+The worker supplies:
 
 ```text
 LCJS_JOB_ID
@@ -86,8 +121,8 @@ using the schema in [the metrics guide](metrics.md). A newline terminates and
 commits a sample; the worker does not advance its durable read offset for a
 partial line.
 
-Artifact globs are evaluated relative to the checkout after the process exits.
-Matching regular files are copied atomically into:
+Artifact globs are evaluated relative to the project directory after the
+process exits. Matching regular files are copied atomically into:
 
 ```text
 <artifact-root>/<project>/<job-id>/<attempt-number>/<artifact-name>/...
