@@ -8,8 +8,12 @@ import (
 	"fmt"
 	"io"
 	"log/slog"
+	"maps"
 	"net/http"
 	"net/url"
+	"os"
+	"path/filepath"
+	"slices"
 	"strings"
 	"time"
 
@@ -23,10 +27,13 @@ type Config struct {
 	Token        string
 	Version      string
 	DatabasePath string
-	WorkRoot     string
 	ArtifactRoot string
-	Capacity     domain.WorkerCapacity
-	HTTPClient   *http.Client
+	// Projects maps a project name to the absolute directory attempts for
+	// that project run in. The worker advertises the names to the control
+	// plane and is only offered jobs for projects it has a directory for.
+	Projects   map[string]string
+	Capacity   domain.WorkerCapacity
+	HTTPClient *http.Client
 }
 
 type Agent struct {
@@ -45,9 +52,22 @@ func New(ctx context.Context, config Config) (*Agent, error) {
 	if config.WorkerID == "" || len(config.Token) < 32 {
 		return nil, errors.New("worker ID and token are required")
 	}
-	if config.WorkRoot == "" || config.ArtifactRoot == "" {
-		return nil, errors.New("worker work and artifact roots are required")
+	if config.ArtifactRoot == "" {
+		return nil, errors.New("worker artifact root is required")
 	}
+	if len(config.Projects) == 0 {
+		return nil, errors.New("at least one --project name=/absolute/path mapping is required")
+	}
+	for name, directory := range config.Projects {
+		if name == "" || !filepath.IsAbs(directory) {
+			return nil, fmt.Errorf("project %q must map a name to an absolute directory", name)
+		}
+		info, err := os.Stat(directory)
+		if err != nil || !info.IsDir() {
+			return nil, fmt.Errorf("project %q directory %s is not an existing directory", name, directory)
+		}
+	}
+	config.Capacity.Projects = slices.Sorted(maps.Keys(config.Projects))
 	if config.Capacity.MaxParallel == 0 {
 		config.Capacity.MaxParallel = 1
 	}

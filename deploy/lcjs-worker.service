@@ -11,7 +11,7 @@ EnvironmentFile=/etc/lcjs-worker/worker.env
 ExecStart=/usr/local/bin/lcjs worker run \
   --server https://control.example.com \
   --db /var/lib/lcjs-worker/worker.db \
-  --work-root /var/lib/lcjs-worker/work \
+  --project example=/srv/projects/example \
   --artifact-root /srv/lcjs/artifacts \
   --max-parallel 1
 Restart=always
@@ -22,7 +22,7 @@ NoNewPrivileges=true
 PrivateDevices=false
 ProtectSystem=strict
 ProtectHome=true
-ReadWritePaths=/var/lib/lcjs-worker /srv/lcjs/artifacts
+ReadWritePaths=/var/lib/lcjs-worker /srv/lcjs/artifacts /srv/projects/example
 UMask=0077
 
 [Install]

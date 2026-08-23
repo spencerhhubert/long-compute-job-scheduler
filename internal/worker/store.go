@@ -172,7 +172,7 @@ func (s *Store) commandsByState(ctx context.Context, state string, limit int) ([
 	return commands, rows.Err()
 }
 
-func (s *Store) MarkStarted(ctx context.Context, commandID string, pid int, workDir, statusPath, metricsPath string) error {
+func (s *Store) MarkStarted(ctx context.Context, commandID string, pid int, workDir, statusPath, metricsPath string, gitState *domain.GitState) error {
 	tx, err := s.db.BeginTx(ctx, nil)
 	if err != nil {
 		return err
@@ -193,7 +193,7 @@ func (s *Store) MarkStarted(ctx context.Context, commandID string, pid int, work
 	if err := tx.QueryRowContext(ctx, `SELECT attempt_id FROM commands WHERE command_id = ?`, commandID).Scan(&attemptID); err != nil {
 		return err
 	}
-	if err := enqueueEvent(ctx, tx, domain.WorkerEvent{AttemptID: attemptID, Kind: domain.WorkerEventAttemptStarted, OccurredAt: now}, now); err != nil {
+	if err := enqueueEvent(ctx, tx, domain.WorkerEvent{AttemptID: attemptID, Kind: domain.WorkerEventAttemptStarted, OccurredAt: now, Git: gitState}, now); err != nil {
 		return err
 	}
 	return tx.Commit()

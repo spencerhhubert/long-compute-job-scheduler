@@ -41,45 +41,44 @@ func (a *Agent) launchPending(ctx context.Context) error {
 
 func (a *Agent) launch(ctx context.Context, command domain.WorkerCommand) error {
 	job := command.Job
-	workDir := filepath.Join(a.config.WorkRoot, job.Spec.Project, job.ID, command.AttemptID)
 	artifactDir := filepath.Join(a.config.ArtifactRoot, job.Spec.Project, job.ID, strconv.FormatUint(uint64(command.AttemptNumber), 10))
-	if err := os.MkdirAll(workDir, 0o700); err != nil {
-		return a.failBeforeLaunch(ctx, command, workDir, artifactDir, fmt.Errorf("create work directory: %w", err))
+	workDir, mapped := a.config.Projects[job.Spec.Project]
+	if !mapped {
+		// The control plane only offers jobs for advertised projects, so
+		// this is a defensive guard against a stale or edited mapping.
+		return a.failBeforeLaunch(ctx, command, workDir, artifactDir, nil, fmt.Errorf("worker has no project directory for project %q", job.Spec.Project))
 	}
 	if err := os.MkdirAll(artifactDir, 0o700); err != nil {
-		return a.failBeforeLaunch(ctx, command, workDir, artifactDir, fmt.Errorf("create artifact directory: %w", err))
+		return a.failBeforeLaunch(ctx, command, workDir, artifactDir, nil, fmt.Errorf("create artifact directory: %w", err))
 	}
 	statusPath := filepath.Join(artifactDir, "run-status.json")
 	metricsPath := filepath.Join(artifactDir, "metrics.jsonl")
 	logPath := filepath.Join(artifactDir, "run.log")
-	if err := materializeSource(ctx, workDir, job.Spec.Source); err != nil {
-		return a.failBeforeLaunch(ctx, command, workDir, artifactDir, err)
+	gitState, err := prepareSource(ctx, workDir, job.Spec.Source)
+	if err != nil {
+		return a.failBeforeLaunch(ctx, command, workDir, artifactDir, gitState, err)
 	}
 	if len(job.Spec.SecretRefs) != 0 {
-		return a.failBeforeLaunch(ctx, command, workDir, artifactDir, errors.New("secret references require a configured worker secret provider"))
+		return a.failBeforeLaunch(ctx, command, workDir, artifactDir, gitState, errors.New("secret references require a configured worker secret provider"))
 	}
 	logFile, err := os.OpenFile(logPath, os.O_CREATE|os.O_APPEND|os.O_WRONLY, 0o600)
 	if err != nil {
-		return a.failBeforeLaunch(ctx, command, workDir, artifactDir, fmt.Errorf("open run log: %w", err))
+		return a.failBeforeLaunch(ctx, command, workDir, artifactDir, gitState, fmt.Errorf("open run log: %w", err))
 	}
 	executable, err := os.Executable()
 	if err != nil {
 		logFile.Close()
-		return a.failBeforeLaunch(ctx, command, workDir, artifactDir, err)
+		return a.failBeforeLaunch(ctx, command, workDir, artifactDir, gitState, err)
 	}
-	arguments := append([]string{"supervise", "--status", statusPath, "--"}, job.Spec.Command...)
-	process := exec.Command(executable, arguments...)
-	process.Dir = workDir
+	process := buildProcess(executable, job, command, workDir, statusPath, metricsPath, artifactDir)
 	process.Stdout = logFile
 	process.Stderr = logFile
-	process.Env = jobEnvironment(job, command, metricsPath, artifactDir)
-	process.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
 	if err := process.Start(); err != nil {
 		logFile.Close()
-		return a.failBeforeLaunch(ctx, command, workDir, artifactDir, fmt.Errorf("start supervisor: %w", err))
+		return a.failBeforeLaunch(ctx, command, workDir, artifactDir, gitState, fmt.Errorf("start supervisor: %w", err))
 	}
 	logFile.Close()
-	if err := a.store.MarkStarted(ctx, command.CommandID, process.Process.Pid, workDir, statusPath, metricsPath); err != nil {
+	if err := a.store.MarkStarted(ctx, command.CommandID, process.Process.Pid, workDir, statusPath, metricsPath, gitState); err != nil {
 		_ = syscall.Kill(-process.Process.Pid, syscall.SIGTERM)
 		return err
 	}
@@ -87,38 +86,85 @@ func (a *Agent) launch(ctx context.Context, command domain.WorkerCommand) error 
 	return nil
 }
 
-func (a *Agent) failBeforeLaunch(ctx context.Context, command domain.WorkerCommand, workDir, artifactDir string, runErr error) error {
+// buildProcess assembles the supervised job process: the job command runs with
+// the project directory as its working directory and inherits the worker
+// process environment plus the spec's environment overlay.
+func buildProcess(executable string, job domain.Job, command domain.WorkerCommand, workDir, statusPath, metricsPath, artifactDir string) *exec.Cmd {
+	arguments := append([]string{"supervise", "--status", statusPath, "--"}, job.Spec.Command...)
+	process := exec.Command(executable, arguments...)
+	process.Dir = workDir
+	process.Env = jobEnvironment(job, command, metricsPath, artifactDir)
+	process.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
+	return process
+}
+
+func (a *Agent) failBeforeLaunch(ctx context.Context, command domain.WorkerCommand, workDir, artifactDir string, gitState *domain.GitState, runErr error) error {
 	statusPath := filepath.Join(artifactDir, "run-status.json")
 	metricsPath := filepath.Join(artifactDir, "metrics.jsonl")
-	if err := a.store.MarkStarted(ctx, command.CommandID, 0, workDir, statusPath, metricsPath); err != nil {
+	if err := a.store.MarkStarted(ctx, command.CommandID, 0, workDir, statusPath, metricsPath, gitState); err != nil {
 		return err
 	}
 	return a.store.MarkFinished(ctx, command.CommandID, -1, runErr.Error(), workerURI(a.config.WorkerID, command, "run.log"), "", nil)
 }
 
-func materializeSource(ctx context.Context, workDir string, source domain.Source) error {
+// prepareSource optionally checks out a pinned commit and returns the git
+// state observed in the project directory. The returned state is recorded on
+// the attempt even when preparation fails; it is nil when the directory is
+// not a git repository.
+func prepareSource(ctx context.Context, workDir string, source domain.Source) (*domain.GitState, error) {
 	if source.OCIImage != "" {
-		return errors.New("OCI image execution is not implemented")
+		return observeGitState(ctx, workDir), errors.New("OCI image execution is not implemented")
 	}
-	if source.GitURL == "" || source.Commit == "" {
-		return errors.New("git URL and commit are required")
+	state := observeGitState(ctx, workDir)
+	if source.Commit == "" {
+		return state, nil
 	}
-	gitDir := filepath.Join(workDir, ".git")
-	if _, err := os.Stat(gitDir); errors.Is(err, os.ErrNotExist) {
-		if output, err := exec.CommandContext(ctx, "git", "init", workDir).CombinedOutput(); err != nil {
-			return fmt.Errorf("initialize repository: %w: %s", err, strings.TrimSpace(string(output)))
+	if state == nil {
+		return nil, fmt.Errorf("source pins commit %s but the project directory is not a git repository", source.Commit)
+	}
+	if state.Dirty {
+		return state, fmt.Errorf("source pins commit %s but the project directory has uncommitted changes; commit or stash them, or submit without a pinned source", source.Commit)
+	}
+	if state.Commit != source.Commit {
+		if _, err := gitOutput(ctx, workDir, "rev-parse", "--quiet", "--verify", source.Commit+"^{commit}"); err != nil {
+			if source.GitURL == "" {
+				return state, fmt.Errorf("pinned commit %s is not present in the project directory", source.Commit)
+			}
+			if output, err := exec.CommandContext(ctx, "git", "-C", workDir, "fetch", source.GitURL, source.Commit).CombinedOutput(); err != nil {
+				return state, fmt.Errorf("fetch pinned commit: %w: %s", err, strings.TrimSpace(string(output)))
+			}
 		}
-		if output, err := exec.CommandContext(ctx, "git", "-C", workDir, "remote", "add", "origin", source.GitURL).CombinedOutput(); err != nil {
-			return fmt.Errorf("configure repository: %w: %s", err, strings.TrimSpace(string(output)))
+		if output, err := exec.CommandContext(ctx, "git", "-C", workDir, "checkout", "--detach", source.Commit).CombinedOutput(); err != nil {
+			return state, fmt.Errorf("check out pinned commit: %w: %s", err, strings.TrimSpace(string(output)))
 		}
 	}
-	if output, err := exec.CommandContext(ctx, "git", "-C", workDir, "fetch", "--depth=1", "origin", source.Commit).CombinedOutput(); err != nil {
-		return fmt.Errorf("fetch source commit: %w: %s", err, strings.TrimSpace(string(output)))
+	return observeGitState(ctx, workDir), nil
+}
+
+// observeGitState records the current HEAD, branch, and whether any tracked
+// files have uncommitted changes. It returns nil when the directory is not a
+// git repository (or has no commits yet).
+func observeGitState(ctx context.Context, workDir string) *domain.GitState {
+	commit, err := gitOutput(ctx, workDir, "rev-parse", "HEAD")
+	if err != nil {
+		return nil
 	}
-	if output, err := exec.CommandContext(ctx, "git", "-C", workDir, "checkout", "--detach", "--force", "FETCH_HEAD").CombinedOutput(); err != nil {
-		return fmt.Errorf("check out source commit: %w: %s", err, strings.TrimSpace(string(output)))
+	state := &domain.GitState{Commit: commit}
+	if branch, err := gitOutput(ctx, workDir, "symbolic-ref", "--short", "--quiet", "HEAD"); err == nil {
+		state.Branch = branch
 	}
-	return nil
+	if status, err := gitOutput(ctx, workDir, "status", "--porcelain", "--untracked-files=no"); err == nil && status != "" {
+		state.Dirty = true
+	}
+	return state
+}
+
+func gitOutput(ctx context.Context, workDir string, arguments ...string) (string, error) {
+	output, err := exec.CommandContext(ctx, "git", append([]string{"-C", workDir}, arguments...)...).Output()
+	if err != nil {
+		return "", err
+	}
+	return strings.TrimSpace(string(output)), nil
 }
 
 func jobEnvironment(job domain.Job, command domain.WorkerCommand, metricsPath, artifactDir string) []string {
