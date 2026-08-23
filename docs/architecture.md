@@ -48,11 +48,17 @@ Both sides use SQLite, but for different purposes:
 | Artifact metadata | Worker, then control plane | Identified by a stable artifact ID and relative location |
 
 Each worker has a stable ID and each agent start has a fresh session ID. Outbox
-records have a monotonically increasing sequence within the worker. The control
-plane uniquely indexes `(worker_id, sequence)` so a repeated sync is harmless.
+records have a monotonically increasing sequence within one agent session. The
+control plane uniquely indexes `(worker_id, session_id, sequence)`, so a
+repeated sync is harmless and an agent restarted with fresh local state begins
+a new session instead of colliding with recorded history; event IDs stay
+globally unique for deduplication.
 
 SQLite runs in WAL mode with foreign keys enabled and a busy timeout. Schema
-migrations are monotonic and run before either service accepts work. Control-
+migrations are monotonic and run before either service accepts work, applied
+with foreign keys off and verified with a full foreign-key check before
+enforcement is re-enabled, so a migration can rebuild a table that other
+tables reference. Control-
 plane backups use SQLite's online backup mechanism or `VACUUM INTO`, not raw
 copies of a live multi-file database.
 
