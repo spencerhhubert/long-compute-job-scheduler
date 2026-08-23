@@ -80,11 +80,11 @@ type Attempt struct {
 }
 
 type RecordedMetric struct {
-	AttemptID string    `json:"attempt_id"`
-	EventID   string    `json:"event_id"`
-	Name      string    `json:"name"`
-	Value     float64   `json:"value"`
-	Step      *int64    `json:"step,omitempty"`
+	AttemptID  string    `json:"attempt_id"`
+	EventID    string    `json:"event_id"`
+	Name       string    `json:"name"`
+	Value      float64   `json:"value"`
+	Step       *int64    `json:"step,omitempty"`
 	ObservedAt time.Time `json:"observed_at"`
 }
 

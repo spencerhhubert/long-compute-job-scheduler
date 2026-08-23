@@ -23,7 +23,7 @@ import (
 var (
 	ErrNotFound            = errors.New("not found")
 	ErrIdempotencyConflict = errors.New("idempotency key reused with a different request")
-	ErrInvalidTransition    = errors.New("invalid state transition")
+	ErrInvalidTransition   = errors.New("invalid state transition")
 )
 
 //go:embed migrations/*.sql
