@@ -3,7 +3,6 @@ package httpapi
 import (
 	"html/template"
 	"io"
-	"math"
 	"net/http"
 	"sort"
 	"strconv"
@@ -30,23 +29,6 @@ type dashboardView struct {
 type jobDetailView struct {
 	TokenName string
 	Detail    domain.JobDetail
-	Metrics   []metricSeriesView
-}
-
-type metricSeriesView struct {
-	Definition domain.MetricDefinition
-	Samples    []domain.RecordedMetric
-	Latest     *domain.RecordedMetric
-	References []metricReferenceView
-	Points     string
-	LatestX    float64
-	LatestY    float64
-	HasSamples bool
-}
-
-type metricReferenceView struct {
-	Line domain.MetricReferenceLine
-	Y    float64
 }
 
 var pageFunctions = template.FuncMap{
@@ -128,68 +110,6 @@ var pageFunctions = template.FuncMap{
 	},
 }
 
-func buildMetricSeries(detail domain.JobDetail) []metricSeriesView {
-	series := make([]metricSeriesView, 0, len(detail.Job.Spec.Metrics))
-	for _, definition := range detail.Job.Spec.Metrics {
-		view := metricSeriesView{Definition: definition, Samples: make([]domain.RecordedMetric, 0)}
-		minimum := math.Inf(1)
-		maximum := math.Inf(-1)
-		if definition.Format == domain.MetricFormatPercent {
-			minimum, maximum = 0, 1
-		}
-		for _, sample := range detail.Metrics {
-			if sample.Name != definition.Name {
-				continue
-			}
-			view.Samples = append(view.Samples, sample)
-			minimum = math.Min(minimum, sample.Value)
-			maximum = math.Max(maximum, sample.Value)
-		}
-		for _, line := range definition.ReferenceLines {
-			minimum = math.Min(minimum, line.Value)
-			maximum = math.Max(maximum, line.Value)
-		}
-		if math.IsInf(minimum, 1) {
-			minimum, maximum = 0, 1
-		} else if minimum == maximum {
-			padding := math.Abs(minimum) * 0.1
-			if padding == 0 {
-				padding = 1
-			}
-			minimum -= padding
-			maximum += padding
-		} else if definition.Format != domain.MetricFormatPercent {
-			padding := (maximum - minimum) * 0.08
-			minimum -= padding
-			maximum += padding
-		}
-		yFor := func(value float64) float64 {
-			return 36 - ((value-minimum)/(maximum-minimum))*32
-		}
-		pointParts := make([]string, 0, len(view.Samples))
-		for index, sample := range view.Samples {
-			x := 50.0
-			if len(view.Samples) > 1 {
-				x = 4 + (float64(index)/float64(len(view.Samples)-1))*92
-			}
-			y := yFor(sample.Value)
-			pointParts = append(pointParts, strconv.FormatFloat(x, 'f', 2, 64)+","+strconv.FormatFloat(y, 'f', 2, 64))
-			view.LatestX, view.LatestY = x, y
-		}
-		view.Points = strings.Join(pointParts, " ")
-		view.HasSamples = len(view.Samples) > 0
-		if view.HasSamples {
-			latest := view.Samples[len(view.Samples)-1]
-			view.Latest = &latest
-		}
-		for _, line := range definition.ReferenceLines {
-			view.References = append(view.References, metricReferenceView{Line: line, Y: yFor(line.Value)})
-		}
-		series = append(series, view)
-	}
-	return series
-}
-
 func formatCount(count uint32, unit string) string {
 	if count == 1 {
 		return "1 " + unit
@@ -198,10 +118,24 @@ func formatCount(count uint32, unit string) string {
 }
 
 func formatMetricValue(metric domain.MetricDefinition, value float64) string {
+	unit := metric.Unit
 	precision := 3
-	if metric.Format == domain.MetricFormatPercent {
+	switch metric.Format {
+	case domain.MetricFormatPercent:
 		precision = 1
 		value *= 100
+	case domain.MetricFormatBytes:
+		precision = 1
+		for _, byteUnit := range []string{"B", "KiB", "MiB", "GiB", "TiB"} {
+			unit = byteUnit
+			if value < 1024 || byteUnit == "TiB" {
+				break
+			}
+			value /= 1024
+		}
+		if unit == "B" {
+			precision = 0
+		}
 	}
 	if metric.Precision != nil {
 		precision = int(*metric.Precision)
@@ -210,8 +144,8 @@ func formatMetricValue(metric domain.MetricDefinition, value float64) string {
 	if metric.Format == domain.MetricFormatPercent {
 		return formatted + "%"
 	}
-	if metric.Unit != "" {
-		return formatted + " " + metric.Unit
+	if unit != "" {
+		return formatted + " " + unit
 	}
 	return formatted
 }
@@ -223,7 +157,7 @@ var loginTemplate = template.Must(template.New("login").Parse(`<!doctype html>
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <meta name="color-scheme" content="light dark">
   <title>Sign in · Compute Jobs</title>
-  <link rel="stylesheet" href="/static/app.css?v=3">
+  <link rel="stylesheet" href="/static/app.css?v=4">
   <script src="/static/theme.js"></script>
 </head>
 <body>
@@ -261,7 +195,7 @@ var dashboardTemplate = template.Must(template.New("dashboard").Funcs(pageFuncti
   <meta name="color-scheme" content="light dark">
   <meta http-equiv="refresh" content="30">
   <title>Compute Jobs</title>
-  <link rel="stylesheet" href="/static/app.css?v=3">
+  <link rel="stylesheet" href="/static/app.css?v=4">
   <script src="/static/theme.js"></script>
 </head>
 <body>
@@ -349,10 +283,12 @@ var jobTemplate = template.Must(template.New("job").Funcs(pageFunctions).Parse(`
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <meta name="color-scheme" content="light dark">
-  <meta http-equiv="refresh" content="15">
   <title>{{.Detail.Job.Spec.Name}} · Compute Jobs</title>
-  <link rel="stylesheet" href="/static/app.css?v=3">
+  <link rel="stylesheet" href="/static/uplot.css">
+  <link rel="stylesheet" href="/static/app.css?v=4">
   <script src="/static/theme.js"></script>
+  <script src="/static/uplot.js" defer></script>
+  <script src="/static/charts.js?v=1" defer></script>
 </head>
 <body>
   <header class="topbar">
@@ -371,7 +307,7 @@ var jobTemplate = template.Must(template.New("job").Funcs(pageFunctions).Parse(`
   </header>
   <main class="console">
     <div class="section-heading">
-      <div><h1>{{.Detail.Job.Spec.Name}} <span class="state" data-state="{{.Detail.Job.State}}">{{.Detail.Job.State}}</span></h1><p>{{.Detail.Job.Spec.Project}} · {{.Detail.Job.ID}} · refreshes every 15 seconds</p></div>
+      <div><h1>{{.Detail.Job.Spec.Name}} <span class="state" data-state="{{.Detail.Job.State}}">{{.Detail.Job.State}}</span></h1><p>{{.Detail.Job.Spec.Project}} · {{.Detail.Job.ID}}</p></div>
       <span class="identity">{{.TokenName}}</span>
     </div>
 
@@ -402,16 +338,10 @@ var jobTemplate = template.Must(template.New("job").Funcs(pageFunctions).Parse(`
     </section>
 
     <section class="panel" aria-labelledby="metrics-title">
-      <div class="panel-header"><h2 id="metrics-title">Metrics</h2><span>{{len .Detail.Metrics}} samples</span></div>
-      {{if .Metrics}}<div class="metric-grid">{{range $series := .Metrics}}<article class="metric-chart">
-        <header><div><strong>{{metricName .Definition}}</strong><small>{{metricObjective .Definition.Objective}}</small></div><b>{{with .Latest}}{{metricValue $series.Definition .Value}}{{else}}No samples{{end}}</b></header>
-        <svg viewBox="0 0 100 40" preserveAspectRatio="none" role="img" aria-label="{{metricName .Definition}} samples and reference lines">
-          <line class="chart-axis" x1="4" y1="36" x2="96" y2="36"></line>
-          {{range .References}}<line class="chart-reference" data-kind="{{.Line.Kind}}" x1="4" y1="{{.Y}}" x2="96" y2="{{.Y}}"></line>{{end}}
-          {{if .HasSamples}}<polyline class="chart-series" points="{{.Points}}"></polyline><circle class="chart-point" cx="{{.LatestX}}" cy="{{.LatestY}}" r="1.8"></circle>{{end}}
-        </svg>
-        <div class="metric-references">{{range .References}}<span class="reference-line" data-kind="{{.Line.Kind}}"><i aria-hidden="true"></i>{{.Line.Label}} <b>{{metricValue $series.Definition .Line.Value}}</b></span>{{else}}<span class="no-reference">No reference lines</span>{{end}}</div>
-      </article>{{end}}</div>{{else}}<div class="empty-block"><strong>No metrics declared.</strong></div>{{end}}
+      <div class="panel-header"><h2 id="metrics-title">Metrics</h2><span data-metrics-meta>{{len .Detail.Metrics}} samples</span></div>
+      <div class="metric-grid" data-metric-charts data-job-id="{{.Detail.Job.ID}}">
+        <noscript><div class="empty-block"><strong>Charts require JavaScript.</strong><span>Metric data remains available at metrics.json and the JSON API.</span></div></noscript>
+      </div>
     </section>
 
     <section class="panel" aria-labelledby="artifacts-title">
@@ -450,7 +380,7 @@ func renderPageStatus(response http.ResponseWriter, page *template.Template, dat
 func setPageHeaders(response http.ResponseWriter) {
 	response.Header().Set("Content-Type", "text/html; charset=utf-8")
 	response.Header().Set("Cache-Control", "no-store")
-	response.Header().Set("Content-Security-Policy", "default-src 'none'; style-src 'self'; script-src 'self'; form-action 'self'; base-uri 'none'; frame-ancestors 'none'")
+	response.Header().Set("Content-Security-Policy", "default-src 'none'; style-src 'self'; script-src 'self'; connect-src 'self'; form-action 'self'; base-uri 'none'; frame-ancestors 'none'")
 }
 
 func serveStyles(response http.ResponseWriter, _ *http.Request) {
@@ -492,12 +422,14 @@ const appCSS = `
   --bg: #f5f6f8; --panel: #fff; --panel-alt: #f8f9fb; --text: #1c2028;
   --muted: #677080; --border: #d7dbe2; --border-strong: #b8bec8; --accent: #2256a3;
   --success: #19713b; --success-bg: #eaf6ee; --danger: #b42318; --danger-bg: #fef0ef;
+  --chart-series: #2a78d6;
 }
 html[data-theme="dark"] {
   color-scheme: dark;
   --bg: #15171b; --panel: #1d2025; --panel-alt: #191c20; --text: #e8eaed;
   --muted: #9da5b1; --border: #353a43; --border-strong: #505763; --accent: #8ab4f8;
   --success: #78d99a; --success-bg: #153824; --danger: #ff9b93; --danger-bg: #461d1b;
+  --chart-series: #3987e5;
 }
 * { box-sizing: border-box; }
 html { min-width: 320px; background: var(--bg); }
@@ -575,20 +507,17 @@ td small.wide { max-width: 520px; }
 .log-tail { border-top: 1px solid var(--border); }
 .log-tail summary { padding: 7px 10px; cursor: pointer; color: var(--muted); font-size: 11px; font-weight: 650; }
 .log-tail pre { max-height: 300px; margin: 0; overflow: auto; padding: 10px; background: var(--panel-alt); border-top: 1px solid var(--border); font: 11px/1.45 ui-monospace, SFMono-Regular, Consolas, monospace; white-space: pre-wrap; }
-.metric-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(300px, 1fr)); }
+.metric-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(320px, 1fr)); }
 .metric-chart { min-width: 0; padding: 10px; border-right: 1px solid var(--border); border-bottom: 1px solid var(--border); }
 .metric-chart header { display: flex; align-items: baseline; justify-content: space-between; gap: 12px; }
 .metric-chart header strong { display: block; }
 .metric-chart header small { margin-left: 6px; color: var(--muted); font-size: 9px; text-transform: uppercase; }
 .metric-chart header b { font-size: 16px; font-variant-numeric: tabular-nums; }
-.metric-chart svg { display: block; width: 100%; height: 150px; margin-top: 5px; background: var(--panel-alt); border: 1px solid var(--border); }
-.chart-axis { stroke: var(--border-strong); stroke-width: .4; }
-.chart-reference { stroke: var(--accent); stroke-width: .5; stroke-dasharray: 2 1; }
-.chart-reference[data-kind="goal"] { stroke-width: .9; stroke-dasharray: none; }
-.chart-reference[data-kind="threshold"] { stroke: var(--danger); }
-.chart-series { fill: none; stroke: var(--success); stroke-width: 1.1; vector-effect: non-scaling-stroke; }
-.chart-point { fill: var(--success); vector-effect: non-scaling-stroke; }
-.metric-references { display: flex; flex-wrap: wrap; gap: 4px 14px; margin-top: 5px; }
+.chart-plot { position: relative; margin-top: 5px; background: var(--panel-alt); border: 1px solid var(--border); }
+.chart-plot .uplot { width: auto; padding: 6px 4px 2px; font: inherit; }
+.chart-plot .u-hz .u-cursor-x { border-right: 1px dashed var(--border-strong); }
+.chart-tooltip { position: absolute; z-index: 4; pointer-events: none; padding: 4px 8px; background: var(--panel); border: 1px solid var(--border-strong); box-shadow: 0 2px 6px rgba(0, 0, 0, .18); color: var(--muted); font-size: 11px; white-space: nowrap; }
+.chart-tooltip b { display: block; color: var(--text); font-size: 12px; font-variant-numeric: tabular-nums; }
 .login-main { width: min(480px, calc(100% - 32px)); margin: 44px auto; }
 .login-panel { border: 1px solid var(--border); background: var(--panel); padding: 18px; }
 .login-panel h1 { margin-bottom: 5px; }

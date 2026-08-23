@@ -36,6 +36,7 @@ Initial resources and operations:
 | `POST` | `/api/v1/jobs` | Submit an immutable job spec |
 | `GET` | `/api/v1/jobs` | List jobs from the central projection |
 | `GET` | `/api/v1/jobs/{id}` | Read job, attempts, and recent events |
+| `GET` | `/api/v1/jobs/{id}/metrics` | Read metric series with an incremental cursor |
 | `POST` | `/api/v1/jobs/{id}/cancel` | Set desired state to canceled |
 | `POST` | `/api/v1/jobs/{id}/retry` | Create a retry after policy validation |
 | `GET` | `/api/v1/workers` | List last-known worker state and resources |
@@ -172,7 +173,15 @@ Job specifications may declare metric presentation, optimization direction,
 and named reference lines such as goals, benchmarks, baselines, and thresholds.
 Percent metrics use fractional raw values from 0 through 1. Reference lines are
 chart annotations; health policies remain the mechanism for automated actions.
-See the [metrics guide](metrics.md) for the full contract.
+See the [metrics guide](metrics.md) for the full contract, including the
+reserved `lcjs/` prefix under which the worker reports automatic resource
+series.
+
+`GET /api/v1/jobs/{id}/metrics` returns each series' definition together with
+its recorded points `(attempt, step, value, observed_at)` and a `cursor`.
+Passing the cursor back as `?after=` returns only samples committed since, so
+the console's live charts poll cheaply while a job runs. The browser console
+reads the same data from `/jobs/{id}/metrics.json` under its session cookie.
 
 Logs are announced as bounded chunks with stream, byte range, checksum, and
 retention class. Small chunks may be uploaded; large logs use the artifact
