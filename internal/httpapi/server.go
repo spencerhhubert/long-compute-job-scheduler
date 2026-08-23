@@ -3,7 +3,6 @@
 package httpapi
 
 import (
-	"log/slog"
 	"context"
 	"crypto/rand"
 	"crypto/sha256"
@@ -12,6 +11,7 @@ import (
 	"encoding/json"
 	"errors"
 	"io"
+	"log/slog"
 	"net/http"
 	"strconv"
 	"strings"
