@@ -245,13 +245,44 @@ func applyWorkerEvent(ctx context.Context, tx *sql.Tx, workerID string, event do
 				content = []byte(artifact.Content)
 			}
 			if _, err := tx.ExecContext(ctx, `
-				INSERT OR IGNORE INTO artifacts(attempt_id, name, uri, size_bytes, sha256, content, created_at)
+				INSERT INTO artifacts(attempt_id, name, uri, size_bytes, sha256, content, created_at)
 				VALUES (?, ?, ?, ?, ?, ?, ?)
+				ON CONFLICT(attempt_id, name, uri) DO UPDATE SET
+					size_bytes = excluded.size_bytes,
+					sha256 = excluded.sha256,
+					content = excluded.content,
+					created_at = excluded.created_at
 			`, event.AttemptID, artifact.Name, artifact.URI, artifact.SizeBytes, artifact.SHA256, content, formatTime(recordedAt)); err != nil {
 				return fmt.Errorf("record artifact: %w", err)
 			}
 		}
 		return appendControlEvent(ctx, tx, "attempt_finished", jobID, map[string]any{"attempt_id": event.AttemptID, "worker_id": workerID, "state": attemptState, "exit_code": exitCode}, recordedAt)
+	case domain.WorkerEventArtifacts:
+		if len(event.Artifacts) == 0 {
+			return errors.New("artifact event carries no artifacts")
+		}
+		for _, artifact := range event.Artifacts {
+			if len(artifact.Content) > 64<<10 {
+				return errors.New("artifact content exceeds 64 KiB")
+			}
+			var content []byte
+			if artifact.Content != "" {
+				content = []byte(artifact.Content)
+			}
+			if _, err := tx.ExecContext(ctx, `
+				INSERT INTO artifacts(attempt_id, name, uri, size_bytes, sha256, content, created_at)
+				VALUES (?, ?, ?, ?, ?, ?, ?)
+				ON CONFLICT(attempt_id, name, uri) DO UPDATE SET
+					size_bytes = excluded.size_bytes,
+					sha256 = excluded.sha256,
+					content = excluded.content,
+					created_at = excluded.created_at
+			`, event.AttemptID, artifact.Name, artifact.URI, artifact.SizeBytes,
+				artifact.SHA256, content, formatTime(recordedAt)); err != nil {
+				return fmt.Errorf("record artifact: %w", err)
+			}
+		}
+		return nil
 	case domain.WorkerEventMetricSample:
 		if event.Metric == nil || event.Metric.Name == "" || math.IsNaN(event.Metric.Value) || math.IsInf(event.Metric.Value, 0) {
 			return errors.New("metric event requires a named finite sample")

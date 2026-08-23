@@ -226,6 +226,31 @@ func (s *Store) MarkFinished(ctx context.Context, commandID string, exitCode int
 	return tx.Commit()
 }
 
+// AnnounceArtifacts records output produced so far without ending the
+// attempt, so a long run's results can be read while it is still going.
+func (s *Store) AnnounceArtifacts(ctx context.Context, commandID string, artifacts []domain.ArtifactAnnouncement) error {
+	if len(artifacts) == 0 {
+		return nil
+	}
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback()
+	now := s.now().UTC()
+	var attemptID string
+	if err := tx.QueryRowContext(ctx, `SELECT attempt_id FROM commands WHERE command_id = ? AND state = 'running'`, commandID).Scan(&attemptID); err != nil {
+		return err
+	}
+	if err := enqueueEvent(ctx, tx, domain.WorkerEvent{
+		AttemptID: attemptID, Kind: domain.WorkerEventArtifacts,
+		OccurredAt: now, Artifacts: artifacts,
+	}, now); err != nil {
+		return err
+	}
+	return tx.Commit()
+}
+
 func (s *Store) EnqueueMetric(ctx context.Context, commandID, attemptID string, sample domain.MetricSample, newOffset int64) error {
 	tx, err := s.db.BeginTx(ctx, nil)
 	if err != nil {

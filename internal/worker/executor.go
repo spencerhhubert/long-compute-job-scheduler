@@ -199,6 +199,7 @@ func (a *Agent) reconcileRunning(ctx context.Context) error {
 		if !found {
 			if command.PID > 0 && processAlive(command.PID) {
 				a.ensureSampler(command)
+				a.announceProgress(ctx, command)
 				continue
 			}
 			status = RunStatus{ExitCode: -1, Error: "worker supervisor disappeared before recording an exit status", FinishedAt: time.Now().UTC()}
@@ -219,6 +220,48 @@ func (a *Agent) reconcileRunning(ctx context.Context) error {
 		}
 	}
 	return nil
+}
+
+// announceProgress publishes whatever the run has written so far, at most
+// once every artifactInterval and only when something actually changed. A
+// long run's artifacts are the main thing worth reading while it is going,
+// and collecting them only at the end makes them useless for watching it.
+func (a *Agent) announceProgress(ctx context.Context, command StoredCommand) {
+	id := command.Command.CommandID
+	if last, seen := a.lastArtifactSweep[id]; seen && time.Since(last) < artifactInterval {
+		return
+	}
+	if a.lastArtifactSweep == nil {
+		a.lastArtifactSweep = map[string]time.Time{}
+	}
+	a.lastArtifactSweep[id] = time.Now()
+
+	artifacts, err := collectArtifacts(a.config.WorkerID, a.config.ArtifactRoot, command)
+	if err != nil || len(artifacts) == 0 {
+		return
+	}
+	var changed []domain.ArtifactAnnouncement
+	seen := a.lastArtifactHash[id]
+	if seen == nil {
+		seen = map[string]string{}
+		if a.lastArtifactHash == nil {
+			a.lastArtifactHash = map[string]map[string]string{}
+		}
+		a.lastArtifactHash[id] = seen
+	}
+	for _, artifact := range artifacts {
+		if seen[artifact.Name] == artifact.SHA256 {
+			continue
+		}
+		seen[artifact.Name] = artifact.SHA256
+		changed = append(changed, artifact)
+	}
+	if len(changed) == 0 {
+		return
+	}
+	if err := a.store.AnnounceArtifacts(ctx, id, changed); err != nil {
+		slog.Warn("could not announce artifacts mid-run", "error", err)
+	}
 }
 
 func readFileTail(path string, limit int64) (string, error) {

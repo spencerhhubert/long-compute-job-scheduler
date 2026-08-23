@@ -44,7 +44,18 @@ type Agent struct {
 	// samplers tracks the per-attempt resource sampler goroutines. It is
 	// only touched from the agent's single cycle goroutine.
 	samplers map[string]context.CancelFunc
+	// lastArtifactSweep and lastArtifactHash bound how often a running
+	// attempt re-publishes its output, and to what actually changed. Same
+	// goroutine, same lack of locking.
+	lastArtifactSweep map[string]time.Time
+	lastArtifactHash  map[string]map[string]string
 }
+
+// artifactInterval is how often a running attempt's declared artifacts are
+// re-collected and announced. Long enough that a checkpoint being rewritten
+// every few seconds does not flood the event stream, short enough that a
+// fifteen-minute poll always sees something recent.
+const artifactInterval = 60 * time.Second
 
 func New(ctx context.Context, config Config) (*Agent, error) {
 	parsed, err := url.Parse(config.ServerURL)

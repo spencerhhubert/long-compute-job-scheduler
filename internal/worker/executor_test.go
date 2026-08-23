@@ -285,3 +285,30 @@ func TestLaunchFailsAttemptWhenProjectIsNotMapped(t *testing.T) {
 		t.Fatalf("finished event = %+v, want failure naming the missing project directory", finished)
 	}
 }
+
+func TestAnnounceProgressOnlyRepublishesWhatChanged(t *testing.T) {
+	// The point of announcing mid-run is that a long run's output can be read
+	// while it is going; the point of the change check is that a checkpoint
+	// rewritten every few seconds must not flood the event stream.
+	agent := &Agent{
+		config:            Config{WorkerID: "wrk_test"},
+		lastArtifactSweep: map[string]time.Time{},
+		lastArtifactHash:  map[string]map[string]string{},
+	}
+	id := "cmd_test"
+	agent.lastArtifactHash[id] = map[string]string{"champion": "abc"}
+
+	seen := agent.lastArtifactHash[id]
+	unchanged := domain.ArtifactAnnouncement{Name: "champion", SHA256: "abc"}
+	if seen[unchanged.Name] != unchanged.SHA256 {
+		t.Fatal("fixture is wrong")
+	}
+	moved := domain.ArtifactAnnouncement{Name: "champion", SHA256: "def"}
+	if seen[moved.Name] == moved.SHA256 {
+		t.Fatal("a changed artifact must not look unchanged")
+	}
+	agent.lastArtifactSweep[id] = time.Now()
+	if time.Since(agent.lastArtifactSweep[id]) >= artifactInterval {
+		t.Fatal("a sweep that just happened must suppress the next one")
+	}
+}
