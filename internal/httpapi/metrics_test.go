@@ -39,7 +39,7 @@ func TestJobMetricsJSONRequiresSessionAndPagesWithCursor(t *testing.T) {
 	}
 	request := domain.WorkerSyncRequest{
 		WorkerID: worker.WorkerID, SessionID: "metrics-session", AgentVersion: "test",
-		Capacity: domain.WorkerCapacity{CPU: 4, MaxParallel: 1},
+		Capacity: domain.WorkerCapacity{CPU: 4, MaxParallel: 1, Projects: []string{"example-research"}},
 	}
 	offered, err := store.SyncWorker(ctx, worker.WorkerID, request)
 	if err != nil {
