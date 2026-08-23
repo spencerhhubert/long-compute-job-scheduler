@@ -279,12 +279,12 @@ func appendControlEvent(ctx context.Context, tx *sql.Tx, kind, resourceID string
 }
 
 type resourceAllocation struct {
-	CPU             uint32
-	MemoryBytes     uint64
-	GPUSharedSlots  uint32
-	GPUExclusive    bool
-	GPUInUse        bool
-	ActiveAttempts  uint32
+	CPU            uint32
+	MemoryBytes    uint64
+	GPUSharedSlots uint32
+	GPUExclusive   bool
+	GPUInUse       bool
+	ActiveAttempts uint32
 }
 
 func offerJobs(ctx context.Context, tx *sql.Tx, workerID string, capacity domain.WorkerCapacity, now time.Time) error {

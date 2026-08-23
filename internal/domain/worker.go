@@ -76,11 +76,11 @@ type WorkerEvent struct {
 }
 
 type WorkerSyncRequest struct {
-	WorkerID    string         `json:"worker_id"`
-	SessionID   string         `json:"session_id"`
-	AgentVersion string        `json:"agent_version"`
-	Capacity    WorkerCapacity `json:"capacity"`
-	Events      []WorkerEvent  `json:"events,omitempty"`
+	WorkerID     string         `json:"worker_id"`
+	SessionID    string         `json:"session_id"`
+	AgentVersion string         `json:"agent_version"`
+	Capacity     WorkerCapacity `json:"capacity"`
+	Events       []WorkerEvent  `json:"events,omitempty"`
 }
 
 type WorkerCommand struct {
@@ -93,8 +93,8 @@ type WorkerCommand struct {
 }
 
 type WorkerSyncResponse struct {
-	ServerTime       time.Time       `json:"server_time"`
-	AcceptedThrough  uint64          `json:"accepted_through"`
-	NextSyncSeconds  uint32          `json:"next_sync_seconds"`
-	Commands         []WorkerCommand `json:"commands,omitempty"`
+	ServerTime      time.Time       `json:"server_time"`
+	AcceptedThrough uint64          `json:"accepted_through"`
+	NextSyncSeconds uint32          `json:"next_sync_seconds"`
+	Commands        []WorkerCommand `json:"commands,omitempty"`
 }

@@ -22,13 +22,13 @@ type Store struct {
 }
 
 type StoredCommand struct {
-	Command       domain.WorkerCommand
-	State         string
-	PID           int
-	WorkDir       string
-	StatusPath    string
-	MetricsPath   string
-	MetricOffset  int64
+	Command      domain.WorkerCommand
+	State        string
+	PID          int
+	WorkDir      string
+	StatusPath   string
+	MetricsPath  string
+	MetricOffset int64
 }
 
 func OpenStore(ctx context.Context, path string) (*Store, error) {
