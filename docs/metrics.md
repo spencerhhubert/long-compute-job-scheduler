@@ -59,11 +59,15 @@ different document is rejected.
 | --- | --- |
 | `name` | Stable series key emitted by the job, such as `validation/accuracy` |
 | `display_name` | Optional human-facing label; defaults to `name` |
-| `format` | `number` (default) or `percent` |
+| `format` | `number` (default), `percent`, or `bytes` |
 | `unit` | Optional suffix for a number, such as `ms` or `tokens/s` |
 | `precision` | Digits after the decimal point, from 0 through 9 |
 | `objective` | `maximize`, `minimize`, or `none` (default) |
 | `reference_lines` | Up to 16 named horizontal chart annotations |
+
+`bytes` values are raw byte counts; the console renders them with binary
+prefixes such as `1.5 GiB`. Like `percent`, the format carries the unit, so
+`unit` must stay empty.
 
 Reference-line kinds are:
 
@@ -114,3 +118,26 @@ labels each line, preserves its `kind`, and shows the latest value relative to
 the declared objective. High-rate roll-ups and retention limits remain future
 work; callers should report meaningful checkpoints rather than every inner
 loop operation.
+
+## Automatic resource series
+
+The `lcjs/` name prefix is reserved for series the worker reports on its own,
+every 15 seconds for each running attempt; job specifications may not define
+metrics under it. The current series are:
+
+| Name | Display name | Meaning |
+| --- | --- | --- |
+| `lcjs/rss_bytes` | Memory (RSS) | Resident set bytes summed over the attempt's process group |
+| `lcjs/gpu_util` | GPU utilization | Mean GPU utilization as a 0-to-1 fraction, via `nvidia-smi` |
+| `lcjs/gpu_mem_bytes` | GPU memory | Used GPU memory in bytes, summed across GPUs, via `nvidia-smi` |
+
+GPU series are reported only for jobs that reserved GPUs. Resource telemetry
+is best effort: if `nvidia-smi` is missing or fails, the worker logs once and
+stops the GPU probes for that attempt without affecting the job. The console
+charts these series alongside the declared metrics, on a wall-clock x-axis.
+
+## Reading samples back
+
+The console's job page charts every series live and stops polling once the job
+reaches a terminal state. The same data is available as JSON: see
+`GET /api/v1/jobs/{id}/metrics` in the [API draft](api.md).

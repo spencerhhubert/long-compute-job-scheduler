@@ -197,10 +197,12 @@ func (a *Agent) reconcileRunning(ctx context.Context) error {
 		}
 		if !found {
 			if command.PID > 0 && processAlive(command.PID) {
+				a.ensureSampler(command)
 				continue
 			}
 			status = RunStatus{ExitCode: -1, Error: "worker supervisor disappeared before recording an exit status", FinishedAt: time.Now().UTC()}
 		}
+		a.stopSampler(command.Command.CommandID)
 		artifacts, err := collectArtifacts(a.config.WorkerID, a.config.ArtifactRoot, command)
 		if err != nil {
 			status.ExitCode = -1

@@ -125,6 +125,29 @@ func TestJobSpecValidateRejectsInvalidMetricDefinitions(t *testing.T) {
 	}
 }
 
+func TestJobSpecValidateReservesSystemMetricPrefixAndAcceptsBytes(t *testing.T) {
+	spec := validSpec()
+	spec.Metrics = []MetricDefinition{{Name: SystemMetricPrefix + "rss_bytes"}}
+	if err := spec.Validate(); err == nil || !strings.Contains(err.Error(), "reserved") {
+		t.Fatalf("reserved prefix error = %v", err)
+	}
+
+	spec.Metrics = []MetricDefinition{{Name: "memory/peak", Format: MetricFormatBytes}}
+	if err := spec.Validate(); err != nil {
+		t.Fatalf("bytes metric: %v", err)
+	}
+	spec.Metrics[0].Unit = "MiB"
+	if err := spec.Validate(); err == nil || !strings.Contains(err.Error(), "unit must be empty") {
+		t.Fatalf("bytes unit error = %v", err)
+	}
+
+	for _, definition := range SystemMetricDefinitions() {
+		if !strings.HasPrefix(definition.Name, SystemMetricPrefix) || definition.DisplayName == "" {
+			t.Fatalf("system metric definition = %+v", definition)
+		}
+	}
+}
+
 func TestJobSpecValidateRejectsArtifactPathEscape(t *testing.T) {
 	spec := validSpec()
 	spec.Artifacts = []ArtifactRule{{Name: "results", Glob: "../private/*"}}
