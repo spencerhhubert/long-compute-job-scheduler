@@ -66,7 +66,7 @@ func TestWorkerSyncDispatchesAndCompletesJobIdempotently(t *testing.T) {
 		{Sequence: 1, EventID: "event-accepted", AttemptID: command.AttemptID, Kind: domain.WorkerEventAttemptAccepted, OccurredAt: now.Add(time.Second)},
 		{Sequence: 2, EventID: "event-started", AttemptID: command.AttemptID, Kind: domain.WorkerEventAttemptStarted, OccurredAt: now.Add(2 * time.Second)},
 		{Sequence: 3, EventID: "event-metric", AttemptID: command.AttemptID, Kind: domain.WorkerEventMetricSample, OccurredAt: now.Add(3 * time.Second), Metric: &domain.MetricSample{Name: "validation/accuracy", Value: 0.91, Step: &step, ObservedAt: now.Add(3 * time.Second)}},
-		{Sequence: 4, EventID: "event-finished", AttemptID: command.AttemptID, Kind: domain.WorkerEventAttemptFinished, OccurredAt: now.Add(4 * time.Second), ExitCode: &exitCode, LogURI: "worker://worker-1/job/attempt/log", Artifacts: []domain.ArtifactAnnouncement{{Name: "result", URI: "worker://worker-1/job/attempt/result", SizeBytes: 12, SHA256: "abc"}}},
+		{Sequence: 4, EventID: "event-finished", AttemptID: command.AttemptID, Kind: domain.WorkerEventAttemptFinished, OccurredAt: now.Add(4 * time.Second), ExitCode: &exitCode, LogURI: "worker://worker-1/job/attempt/log", LogTail: "training complete\n", Artifacts: []domain.ArtifactAnnouncement{{Name: "result", URI: "worker://worker-1/job/attempt/result", SizeBytes: 12, SHA256: "abc"}}},
 	}
 	finished, err := store.SyncWorker(ctx, credential.WorkerID, request)
 	if err != nil {
@@ -88,6 +88,9 @@ func TestWorkerSyncDispatchesAndCompletesJobIdempotently(t *testing.T) {
 	}
 	if len(detail.Attempts) != 1 || detail.Attempts[0].State != domain.AttemptSucceeded {
 		t.Fatalf("attempts = %+v, want one succeeded attempt", detail.Attempts)
+	}
+	if detail.Attempts[0].LogTail != "training complete\n" {
+		t.Fatalf("log tail = %q", detail.Attempts[0].LogTail)
 	}
 	if len(detail.Metrics) != 1 || detail.Metrics[0].Name != "validation/accuracy" || detail.Metrics[0].Value != 0.91 {
 		t.Fatalf("metrics = %+v, want recorded accuracy", detail.Metrics)

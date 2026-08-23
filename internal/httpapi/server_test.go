@@ -44,7 +44,7 @@ func TestConsoleLoginPersistsSecureSessionAndShowsJobState(t *testing.T) {
 	if body := loginPageResponse.Body.String(); !strings.Contains(body, "Operator sign in") || !strings.Contains(body, `data-theme="light"`) {
 		t.Fatalf("login page = %q", body)
 	}
-	if !strings.Contains(loginPageResponse.Body.String(), `/static/app.css?v=2`) {
+	if !strings.Contains(loginPageResponse.Body.String(), `/static/app.css?v=3`) {
 		t.Fatal("login page does not use the current stylesheet version")
 	}
 
@@ -52,7 +52,19 @@ func TestConsoleLoginPersistsSecureSessionAndShowsJobState(t *testing.T) {
 	if _, err := store.CreateAPIToken(context.Background(), "test browser", operatorKey); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := store.CreateJob(context.Background(), "dashboard-job", testJobSpec()); err != nil {
+	created, err := store.CreateJob(context.Background(), "dashboard-job", testJobSpec())
+	if err != nil {
+		t.Fatal(err)
+	}
+	const workerToken = "lcjw_dashboard0123456789abcdef0123456789abcdef0123456"
+	worker, err := store.CreateWorker(context.Background(), "worker-test", workerToken, map[string]string{"host": "entropy"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.SyncWorker(context.Background(), worker.WorkerID, domain.WorkerSyncRequest{
+		WorkerID: worker.WorkerID, SessionID: "dashboard-session", AgentVersion: "test-sha",
+		Capacity: domain.WorkerCapacity{CPU: 4, MaxParallel: 1, Labels: map[string]string{"host": "entropy"}},
+	}); err != nil {
 		t.Fatal(err)
 	}
 	form := url.Values{"key": {operatorKey}}.Encode()
@@ -86,13 +98,25 @@ func TestConsoleLoginPersistsSecureSessionAndShowsJobState(t *testing.T) {
 		t.Fatalf("Content-Security-Policy = %q", policy)
 	}
 	body := dashboardResponse.Body.String()
-	for _, expected := range []string{"Control plane online", "train-baseline", "example-research", "Human best", "94.5%", "No workers enrolled", "test browser"} {
+	for _, expected := range []string{"Control plane online", "train-baseline", "example-research", "Human best", "94.5%", "worker-test", "4 CPUs", "host=entropy", "test-sha", "test browser", "/jobs/" + created.Job.ID} {
 		if !strings.Contains(body, expected) {
 			t.Fatalf("dashboard does not contain %q: %s", expected, body)
 		}
 	}
 	if strings.Contains(body, "Long Compute Job Scheduler") {
 		t.Fatal("dashboard still contains the old landing-page title")
+	}
+	detailRequest := httptest.NewRequest(http.MethodGet, "/jobs/"+created.Job.ID, nil)
+	detailRequest.AddCookie(cookie)
+	detailResponse := httptest.NewRecorder()
+	server.ServeHTTP(detailResponse, detailRequest)
+	if detailResponse.Code != http.StatusOK {
+		t.Fatalf("job page status = %d: %s", detailResponse.Code, detailResponse.Body.String())
+	}
+	for _, expected := range []string{"Attempts", "Metrics", "Artifacts", "Human best", "No samples", worker.WorkerID} {
+		if !strings.Contains(detailResponse.Body.String(), expected) {
+			t.Fatalf("job page does not contain %q: %s", expected, detailResponse.Body.String())
+		}
 	}
 
 	logoutRequest := httptest.NewRequest(http.MethodPost, "/logout", nil)

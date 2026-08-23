@@ -1,0 +1,1 @@
+ALTER TABLE attempts ADD COLUMN log_tail TEXT NOT NULL DEFAULT '';

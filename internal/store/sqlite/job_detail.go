@@ -17,7 +17,7 @@ func (s *Store) GetJobDetail(ctx context.Context, jobID string) (domain.JobDetai
 	detail := domain.JobDetail{Job: job, Attempts: make([]domain.Attempt, 0), Metrics: make([]domain.RecordedMetric, 0), Artifacts: make([]domain.Artifact, 0)}
 	attemptRows, err := s.db.QueryContext(ctx, `
 		SELECT id, job_id, attempt_number, worker_id, state, revision, offered_at,
-		       lease_expires_at, accepted_at, started_at, finished_at, exit_code, error, log_uri
+		       lease_expires_at, accepted_at, started_at, finished_at, exit_code, error, log_uri, log_tail
 		FROM attempts WHERE job_id = ? ORDER BY attempt_number, id
 	`, jobID)
 	if err != nil {
@@ -28,7 +28,7 @@ func (s *Store) GetJobDetail(ctx context.Context, jobID string) (domain.JobDetai
 		var offered, lease string
 		var accepted, started, finished sql.NullString
 		var exitCode sql.NullInt64
-		if err := attemptRows.Scan(&attempt.ID, &attempt.JobID, &attempt.AttemptNumber, &attempt.WorkerID, &attempt.State, &attempt.Revision, &offered, &lease, &accepted, &started, &finished, &exitCode, &attempt.Error, &attempt.LogURI); err != nil {
+		if err := attemptRows.Scan(&attempt.ID, &attempt.JobID, &attempt.AttemptNumber, &attempt.WorkerID, &attempt.State, &attempt.Revision, &offered, &lease, &accepted, &started, &finished, &exitCode, &attempt.Error, &attempt.LogURI, &attempt.LogTail); err != nil {
 			attemptRows.Close()
 			return domain.JobDetail{}, err
 		}
