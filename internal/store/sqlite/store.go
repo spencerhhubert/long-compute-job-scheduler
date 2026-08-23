@@ -95,6 +95,11 @@ func (s *Store) initialize(ctx context.Context) error {
 	if err != nil {
 		return fmt.Errorf("read embedded migrations: %w", err)
 	}
+	// Migrations may rebuild tables that other tables reference, which SQLite
+	// only permits with foreign keys off; integrity is verified afterwards.
+	if _, err := s.db.ExecContext(ctx, "PRAGMA foreign_keys = OFF"); err != nil {
+		return fmt.Errorf("disable foreign keys for migrations: %w", err)
+	}
 	for _, entry := range entries {
 		if entry.IsDir() {
 			continue
@@ -102,6 +107,16 @@ func (s *Store) initialize(ctx context.Context) error {
 		if err := s.applyMigration(ctx, entry.Name()); err != nil {
 			return err
 		}
+	}
+	var violation string
+	if err := s.db.QueryRowContext(ctx, "PRAGMA foreign_key_check").Scan(&violation); !errors.Is(err, sql.ErrNoRows) {
+		if err != nil {
+			return fmt.Errorf("verify foreign keys after migrations: %w", err)
+		}
+		return fmt.Errorf("foreign key violation after migrations in table %s", violation)
+	}
+	if _, err := s.db.ExecContext(ctx, "PRAGMA foreign_keys = ON"); err != nil {
+		return fmt.Errorf("re-enable foreign keys after migrations: %w", err)
 	}
 	return nil
 }

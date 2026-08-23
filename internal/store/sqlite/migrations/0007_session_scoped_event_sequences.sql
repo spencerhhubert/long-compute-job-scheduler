@@ -2,6 +2,7 @@
 -- worker's whole lifetime. An agent restarted with fresh local state begins a
 -- new session and restarts its sequence numbers; that must not conflict with
 -- history recorded under earlier sessions of the same worker.
+
 CREATE TABLE worker_events_new (
     worker_id    TEXT NOT NULL REFERENCES workers(id),
     session_id   TEXT NOT NULL DEFAULT '',
