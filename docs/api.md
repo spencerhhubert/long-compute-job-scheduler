@@ -193,9 +193,16 @@ retention class. Small chunks may be uploaded; large logs use the artifact
 transfer mechanism.
 
 Artifact announcements contain stable ID, logical name, worker URI, byte size,
-checksum, media type, and whether the artifact is a resumable checkpoint. An
-artifact is not considered committed until it has been atomically renamed into
-its final store path and its announcement is in the worker outbox.
+checksum, media type, and whether the artifact is a resumable checkpoint. When
+the file is at most 64 KiB of valid UTF-8 text, the announcement also carries
+its full bytes in an optional `content` string; larger or binary artifacts
+announce metadata only. An artifact is not considered committed until it has
+been atomically renamed into its final store path and its announcement is in
+the worker outbox.
+
+Each artifact in the job detail response includes its stored `content` when
+the worker inlined it, so small text results are readable through the API and
+previewed on the console job page without contacting the worker.
 
 ## Scope vocabulary
 

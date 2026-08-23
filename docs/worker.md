@@ -129,4 +129,7 @@ process exits. Matching regular files are copied atomically into:
 ```
 
 The control plane receives only portable `worker://` URIs, sizes, and SHA-256
-checksums. Absolute worker paths never cross the protocol boundary.
+checksums. When a matched file is at most 64 KiB of valid UTF-8 text, the
+announcement also carries its full content so the console can preview it;
+larger or binary artifacts announce metadata only. Absolute worker paths never
+cross the protocol boundary.
