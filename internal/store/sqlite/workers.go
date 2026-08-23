@@ -237,10 +237,17 @@ func applyWorkerEvent(ctx context.Context, tx *sql.Tx, workerID string, event do
 			return fmt.Errorf("finish job: %w", err)
 		}
 		for _, artifact := range event.Artifacts {
+			if len(artifact.Content) > 64<<10 {
+				return errors.New("artifact content exceeds 64 KiB")
+			}
+			var content []byte
+			if artifact.Content != "" {
+				content = []byte(artifact.Content)
+			}
 			if _, err := tx.ExecContext(ctx, `
-				INSERT OR IGNORE INTO artifacts(attempt_id, name, uri, size_bytes, sha256, created_at)
-				VALUES (?, ?, ?, ?, ?, ?)
-			`, event.AttemptID, artifact.Name, artifact.URI, artifact.SizeBytes, artifact.SHA256, formatTime(recordedAt)); err != nil {
+				INSERT OR IGNORE INTO artifacts(attempt_id, name, uri, size_bytes, sha256, content, created_at)
+				VALUES (?, ?, ?, ?, ?, ?, ?)
+			`, event.AttemptID, artifact.Name, artifact.URI, artifact.SizeBytes, artifact.SHA256, content, formatTime(recordedAt)); err != nil {
 				return fmt.Errorf("record artifact: %w", err)
 			}
 		}

@@ -64,6 +64,10 @@ type ArtifactAnnouncement struct {
 	URI       string `json:"uri"`
 	SizeBytes int64  `json:"size_bytes"`
 	SHA256    string `json:"sha256"`
+	// Content is the artifact's full bytes, included only when the file is
+	// at most 64 KiB of valid UTF-8 text. Larger or binary artifacts
+	// announce metadata only.
+	Content string `json:"content,omitempty"`
 }
 
 // GitState is the version-control state a worker observed in its project
@@ -105,11 +109,14 @@ type RecordedMetric struct {
 }
 
 type Artifact struct {
-	AttemptID string    `json:"attempt_id"`
-	Name      string    `json:"name"`
-	URI       string    `json:"uri"`
-	SizeBytes int64     `json:"size_bytes"`
-	SHA256    string    `json:"sha256"`
+	AttemptID string `json:"attempt_id"`
+	Name      string `json:"name"`
+	URI       string `json:"uri"`
+	SizeBytes int64  `json:"size_bytes"`
+	SHA256    string `json:"sha256"`
+	// Content is the stored artifact text when the worker inlined it in its
+	// announcement; empty when only metadata was announced.
+	Content   string    `json:"content,omitempty"`
 	CreatedAt time.Time `json:"created_at"`
 }
 
