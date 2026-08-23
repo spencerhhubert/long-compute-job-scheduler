@@ -103,7 +103,7 @@ func (s *Store) GetJobDetail(ctx context.Context, jobID string) (domain.JobDetai
 	}
 
 	artifactRows, err := s.db.QueryContext(ctx, `
-		SELECT f.attempt_id, f.name, f.uri, f.size_bytes, f.sha256, f.created_at
+		SELECT f.attempt_id, f.name, f.uri, f.size_bytes, f.sha256, f.content, f.created_at
 		FROM artifacts AS f JOIN attempts AS a ON a.id = f.attempt_id
 		WHERE a.job_id = ? ORDER BY f.created_at, f.name, f.uri
 	`, jobID)
@@ -112,11 +112,13 @@ func (s *Store) GetJobDetail(ctx context.Context, jobID string) (domain.JobDetai
 	}
 	for artifactRows.Next() {
 		var artifact domain.Artifact
+		var content []byte
 		var created string
-		if err := artifactRows.Scan(&artifact.AttemptID, &artifact.Name, &artifact.URI, &artifact.SizeBytes, &artifact.SHA256, &created); err != nil {
+		if err := artifactRows.Scan(&artifact.AttemptID, &artifact.Name, &artifact.URI, &artifact.SizeBytes, &artifact.SHA256, &content, &created); err != nil {
 			artifactRows.Close()
 			return domain.JobDetail{}, err
 		}
+		artifact.Content = string(content)
 		artifact.CreatedAt, err = time.Parse(time.RFC3339Nano, created)
 		if err != nil {
 			artifactRows.Close()
