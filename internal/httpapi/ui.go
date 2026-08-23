@@ -1,6 +1,7 @@
 package httpapi
 
 import (
+	"encoding/json"
 	"html/template"
 	"io"
 	"net/http"
@@ -114,6 +115,28 @@ var pageFunctions = template.FuncMap{
 		}
 		return strconv.Itoa(*value)
 	},
+	"artifactPreview": artifactPreview,
+}
+
+// artifactPreview returns the stored artifact text, pretty-printed when it is
+// named as JSON and parses. It returns plain text; the template escapes it
+// where it is rendered, so JSON HTML escaping stays off for readability.
+func artifactPreview(artifact domain.Artifact) string {
+	if !strings.HasSuffix(artifact.Name, ".json") && !strings.HasSuffix(artifact.URI, ".json") {
+		return artifact.Content
+	}
+	var value any
+	if err := json.Unmarshal([]byte(artifact.Content), &value); err != nil {
+		return artifact.Content
+	}
+	var pretty strings.Builder
+	encoder := json.NewEncoder(&pretty)
+	encoder.SetEscapeHTML(false)
+	encoder.SetIndent("", "  ")
+	if err := encoder.Encode(value); err != nil {
+		return artifact.Content
+	}
+	return strings.TrimSuffix(pretty.String(), "\n")
 }
 
 func formatCount(count uint32, unit string) string {
@@ -357,6 +380,7 @@ var jobTemplate = template.Must(template.New("job").Funcs(pageFunctions).Parse(`
         <thead><tr><th>Name</th><th>Size</th><th>SHA-256</th><th>Location</th><th>Created</th></tr></thead>
         <tbody>{{range .Detail.Artifacts}}<tr><td><strong>{{.Name}}</strong></td><td class="numeric">{{.SizeBytes}} B</td><td><small class="wide">{{.SHA256}}</small></td><td><small class="wide">{{.URI}}</small></td><td>{{jobTime .CreatedAt}}</td></tr>{{else}}<tr><td class="empty" colspan="5">No artifacts recorded.</td></tr>{{end}}</tbody>
       </table></div>
+      {{range .Detail.Artifacts}}{{if .Content}}<details class="log-tail"><summary>{{.Name}} · {{.SizeBytes}} B</summary><pre>{{artifactPreview .}}</pre></details>{{end}}{{end}}
     </section>
 
     <section class="panel" aria-labelledby="health-title">

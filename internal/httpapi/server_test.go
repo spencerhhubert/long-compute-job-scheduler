@@ -10,6 +10,7 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/spencerhhubert/long-compute-job-scheduler/internal/domain"
 	sqlitestore "github.com/spencerhhubert/long-compute-job-scheduler/internal/store/sqlite"
@@ -139,6 +140,116 @@ func TestConsoleLoginPersistsSecureSessionAndShowsJobState(t *testing.T) {
 	server.ServeHTTP(afterLogoutResponse, afterLogout)
 	if afterLogoutResponse.Code != http.StatusSeeOther {
 		t.Fatalf("status after logout = %d", afterLogoutResponse.Code)
+	}
+}
+
+func TestJobPagePreviewsSmallTextArtifacts(t *testing.T) {
+	ctx := context.Background()
+	store, err := sqlitestore.Open(ctx, filepath.Join(t.TempDir(), "control.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer store.Close()
+	server, err := New(store, testToken)
+	if err != nil {
+		t.Fatal(err)
+	}
+	const operatorKey = "lcjs_preview0123456789abcdef0123456789abcdef0123"
+	if _, err := store.CreateAPIToken(ctx, "preview browser", operatorKey); err != nil {
+		t.Fatal(err)
+	}
+	created, err := store.CreateJob(ctx, "preview-job", testJobSpec())
+	if err != nil {
+		t.Fatal(err)
+	}
+	worker, err := store.CreateWorker(ctx, "worker-preview", "lcjw_preview0123456789abcdef0123456789abcdef0123", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	syncRequest := domain.WorkerSyncRequest{
+		WorkerID: worker.WorkerID, SessionID: "preview-session", AgentVersion: "test",
+		Capacity: domain.WorkerCapacity{CPU: 4, MaxParallel: 1, Projects: []string{"example-research"}},
+	}
+	offered, err := store.SyncWorker(ctx, worker.WorkerID, syncRequest)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(offered.Commands) != 1 {
+		t.Fatalf("offered commands = %+v", offered.Commands)
+	}
+	attemptID := offered.Commands[0].AttemptID
+	exitCode := 0
+	now := time.Now().UTC()
+	const jsonContent = `{"note":"<script>alert(1)</script>","score":0.91}`
+	const textContent = "plain <b>text</b> & more"
+	syncRequest.Events = []domain.WorkerEvent{
+		{Sequence: 1, EventID: "pv-accepted", AttemptID: attemptID, Kind: domain.WorkerEventAttemptAccepted, OccurredAt: now},
+		{Sequence: 2, EventID: "pv-started", AttemptID: attemptID, Kind: domain.WorkerEventAttemptStarted, OccurredAt: now},
+		{Sequence: 3, EventID: "pv-finished", AttemptID: attemptID, Kind: domain.WorkerEventAttemptFinished, OccurredAt: now, ExitCode: &exitCode, Artifacts: []domain.ArtifactAnnouncement{
+			{Name: "result", URI: "worker://worker-preview/p/j/1/result/champion.json", SizeBytes: int64(len(jsonContent)), SHA256: "aaa", Content: jsonContent},
+			{Name: "notes", URI: "worker://worker-preview/p/j/1/notes/notes.txt", SizeBytes: int64(len(textContent)), SHA256: "bbb", Content: textContent},
+			{Name: "checkpoint", URI: "worker://worker-preview/p/j/1/checkpoint/model.pt", SizeBytes: 1 << 30, SHA256: "ccc"},
+		}},
+	}
+	if _, err := store.SyncWorker(ctx, worker.WorkerID, syncRequest); err != nil {
+		t.Fatal(err)
+	}
+
+	form := url.Values{"key": {operatorKey}}.Encode()
+	loginRequest := httptest.NewRequest(http.MethodPost, "/login", strings.NewReader(form))
+	loginRequest.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	loginResponse := httptest.NewRecorder()
+	server.ServeHTTP(loginResponse, loginRequest)
+	cookies := loginResponse.Result().Cookies()
+	if len(cookies) != 1 {
+		t.Fatalf("login cookies = %d, want 1", len(cookies))
+	}
+	pageRequest := httptest.NewRequest(http.MethodGet, "/jobs/"+created.Job.ID, nil)
+	pageRequest.AddCookie(cookies[0])
+	pageResponse := httptest.NewRecorder()
+	server.ServeHTTP(pageResponse, pageRequest)
+	if pageResponse.Code != http.StatusOK {
+		t.Fatalf("job page status = %d: %s", pageResponse.Code, pageResponse.Body.String())
+	}
+	body := pageResponse.Body.String()
+	for _, expected := range []string{
+		// The JSON artifact is pretty-printed (the raw content has no space
+		// after the colon) and escaped.
+		"&#34;score&#34;: 0.91",
+		"&lt;script&gt;alert(1)&lt;/script&gt;",
+		// The plain-text artifact is shown as-is, escaped.
+		"plain &lt;b&gt;text&lt;/b&gt; &amp; more",
+		// The metadata-only artifact still appears in the table.
+		"model.pt",
+	} {
+		if !strings.Contains(body, expected) {
+			t.Fatalf("job page does not contain %q: %s", expected, body)
+		}
+	}
+	if strings.Contains(body, "<script>alert(1)") {
+		t.Fatal("job page contains unescaped artifact content")
+	}
+	if got := strings.Count(body, `<details class="log-tail"><summary>`); got != 2 {
+		t.Fatalf("artifact previews = %d, want 2 (none for the metadata-only artifact)", got)
+	}
+
+	apiRequest := httptest.NewRequest(http.MethodGet, "/api/v1/jobs/"+created.Job.ID, nil)
+	apiRequest.Header.Set("Authorization", "Bearer "+testToken)
+	apiResponse := httptest.NewRecorder()
+	server.ServeHTTP(apiResponse, apiRequest)
+	if apiResponse.Code != http.StatusOK {
+		t.Fatalf("API job detail status = %d: %s", apiResponse.Code, apiResponse.Body.String())
+	}
+	var detail domain.JobDetail
+	if err := json.Unmarshal(apiResponse.Body.Bytes(), &detail); err != nil {
+		t.Fatal(err)
+	}
+	contents := make(map[string]string, len(detail.Artifacts))
+	for _, artifact := range detail.Artifacts {
+		contents[artifact.Name] = artifact.Content
+	}
+	if contents["result"] != jsonContent || contents["notes"] != textContent || contents["checkpoint"] != "" {
+		t.Fatalf("API artifact contents = %+v", contents)
 	}
 }
 
