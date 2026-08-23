@@ -39,6 +39,9 @@ const (
 	LostWorkerFail   LostWorkerAction = "fail"
 )
 
+// Source optionally pins the revision an attempt should run at. When it is
+// empty the worker runs the job in its mapped project directory as-is and the
+// observed git state is recorded on the attempt instead.
 type Source struct {
 	GitURL   string `json:"git_url,omitempty"`
 	Commit   string `json:"commit,omitempty"`
@@ -181,17 +184,14 @@ func (spec JobSpec) Validate() error {
 	}
 
 	hasGit := spec.Source.GitURL != "" || spec.Source.Commit != ""
-	hasImage := spec.Source.OCIImage != ""
-	if hasGit == hasImage {
-		errs = append(errs, errors.New("source must contain exactly one of git revision or OCI image"))
+	if hasGit && spec.Source.OCIImage != "" {
+		errs = append(errs, errors.New("source may not combine a git revision and an OCI image"))
 	}
-	if hasGit {
-		if spec.Source.GitURL == "" {
-			errs = append(errs, errors.New("source.git_url is required with source.commit"))
-		}
-		if !commitPattern.MatchString(spec.Source.Commit) {
-			errs = append(errs, errors.New("source.commit must be a full 40- or 64-character hexadecimal object ID"))
-		}
+	if spec.Source.GitURL != "" && spec.Source.Commit == "" {
+		errs = append(errs, errors.New("source.commit is required with source.git_url"))
+	}
+	if spec.Source.Commit != "" && !commitPattern.MatchString(spec.Source.Commit) {
+		errs = append(errs, errors.New("source.commit must be a full 40- or 64-character hexadecimal object ID"))
 	}
 	if len(spec.Command) == 0 || strings.TrimSpace(spec.Command[0]) == "" {
 		errs = append(errs, errors.New("command must contain an executable"))
