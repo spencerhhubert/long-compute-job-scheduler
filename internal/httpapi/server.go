@@ -35,6 +35,9 @@ type Store interface {
 	CreateBrowserSession(context.Context, string, string, time.Time) error
 	AuthenticateBrowserSession(context.Context, string) (sqlitestore.BrowserSession, error)
 	DeleteBrowserSession(context.Context, string) error
+	AuthenticateWorkerToken(context.Context, string) (sqlitestore.WorkerCredential, error)
+	SyncWorker(context.Context, string, domain.WorkerSyncRequest) (domain.WorkerSyncResponse, error)
+	ListWorkers(context.Context, time.Duration) ([]domain.Worker, error)
 }
 
 type Server struct {
@@ -63,6 +66,8 @@ func New(store Store, bootstrapToken string) (*Server, error) {
 	mux.Handle("POST /api/v1/jobs", s.authenticateAPI(http.HandlerFunc(s.createJob)))
 	mux.Handle("GET /api/v1/jobs", s.authenticateAPI(http.HandlerFunc(s.listJobs)))
 	mux.Handle("GET /api/v1/jobs/{id}", s.authenticateAPI(http.HandlerFunc(s.getJob)))
+	mux.Handle("GET /api/v1/workers", s.authenticateAPI(http.HandlerFunc(s.listWorkers)))
+	mux.HandleFunc("POST /api/v1/worker/sync", s.workerSync)
 	s.handler = mux
 	return s, nil
 }
@@ -273,6 +278,59 @@ func (s *Server) listJobs(response http.ResponseWriter, request *http.Request) {
 		return
 	}
 	writeJSON(response, http.StatusOK, map[string]any{"jobs": jobs})
+}
+
+func (s *Server) listWorkers(response http.ResponseWriter, request *http.Request) {
+	workers, err := s.store.ListWorkers(request.Context(), 30*time.Second)
+	if err != nil {
+		writeError(response, http.StatusInternalServerError, "internal", "workers could not be listed")
+		return
+	}
+	writeJSON(response, http.StatusOK, map[string]any{"workers": workers})
+}
+
+func (s *Server) workerSync(response http.ResponseWriter, request *http.Request) {
+	const prefix = "Bearer "
+	header := request.Header.Get("Authorization")
+	if !strings.HasPrefix(header, prefix) {
+		writeError(response, http.StatusUnauthorized, "unauthorized", "a worker bearer token is required")
+		return
+	}
+	credential, err := s.store.AuthenticateWorkerToken(request.Context(), strings.TrimPrefix(header, prefix))
+	if errors.Is(err, sqlitestore.ErrNotFound) {
+		writeError(response, http.StatusUnauthorized, "unauthorized", "the worker bearer token is invalid")
+		return
+	}
+	if err != nil {
+		writeError(response, http.StatusInternalServerError, "internal", "worker authentication is temporarily unavailable")
+		return
+	}
+	request.Body = http.MaxBytesReader(response, request.Body, 4<<20)
+	decoder := json.NewDecoder(request.Body)
+	decoder.DisallowUnknownFields()
+	var syncRequest domain.WorkerSyncRequest
+	if err := decoder.Decode(&syncRequest); err != nil {
+		writeError(response, http.StatusBadRequest, "invalid_json", "request body must be one worker sync request")
+		return
+	}
+	if err := decoder.Decode(&struct{}{}); !errors.Is(err, io.EOF) {
+		writeError(response, http.StatusBadRequest, "invalid_json", "request body must contain exactly one JSON value")
+		return
+	}
+	if syncRequest.WorkerID != credential.WorkerID {
+		writeError(response, http.StatusForbidden, "worker_identity_mismatch", "the token is not bound to this worker")
+		return
+	}
+	if syncRequest.SessionID == "" || len(syncRequest.Events) > 1000 {
+		writeError(response, http.StatusBadRequest, "invalid_sync", "session_id is required and events are limited to 1000 per sync")
+		return
+	}
+	syncResponse, err := s.store.SyncWorker(request.Context(), credential.WorkerID, syncRequest)
+	if err != nil {
+		writeError(response, http.StatusInternalServerError, "internal", "worker sync could not be applied")
+		return
+	}
+	writeJSON(response, http.StatusOK, syncResponse)
 }
 
 func randomSecret(prefix string) (string, error) {
