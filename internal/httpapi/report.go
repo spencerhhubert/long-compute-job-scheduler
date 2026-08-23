@@ -110,7 +110,10 @@ func (s *Server) projectReport(response http.ResponseWriter, request *http.Reque
 			continue
 		}
 		out.WriteString("\n---\n\n")
-		out.WriteString(renderJobReport(detail, now, false))
+		// Inline the artifacts here too. A run's current output is the whole
+		// reason to look at it while it is going; a list of file names and
+		// sizes is not a report, and this view is the one a poller reads.
+		out.WriteString(renderJobReport(detail, now, true))
 	}
 	response.Header().Set("Content-Type", "text/markdown; charset=utf-8")
 	response.WriteHeader(http.StatusOK)

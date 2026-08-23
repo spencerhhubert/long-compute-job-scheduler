@@ -122,3 +122,14 @@ func TestTrendReadsInTheDirectionTheMetricCaresAbout(t *testing.T) {
 		t.Fatalf("a falling maximise metric should be worsening, got %q", max.trend())
 	}
 }
+
+func TestProjectReportInlinesArtifactsForRunningJobs(t *testing.T) {
+	// The project view is what a periodic poller reads, so it has to carry
+	// the run's actual output. Reporting only names and sizes there was the
+	// difference between watching a search and watching a directory listing.
+	detail := sampleDetail()
+	out := renderJobReport(detail, time.Now().UTC(), true)
+	if !strings.Contains(out, "Contexts ←") {
+		t.Fatalf("running job report must inline artifact content:\n%s", out)
+	}
+}
