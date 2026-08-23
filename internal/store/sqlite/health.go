@@ -37,12 +37,12 @@ type WebhookDelivery struct {
 }
 
 type healthCandidate struct {
-	JobID        string
-	AttemptID    string
+	JobID         string
+	AttemptID     string
 	AttemptNumber uint32
-	WorkerID     string
-	StartedAt    time.Time
-	Spec         domain.JobSpec
+	WorkerID      string
+	StartedAt     time.Time
+	Spec          domain.JobSpec
 }
 
 func (s *Store) CreateWebhookTarget(ctx context.Context, name, rawURL, secret string) (WebhookTarget, error) {

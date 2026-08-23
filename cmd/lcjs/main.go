@@ -17,8 +17,8 @@ import (
 	"syscall"
 	"time"
 
-	"github.com/spencerhhubert/long-compute-job-scheduler/internal/domain"
 	"github.com/spencerhhubert/long-compute-job-scheduler/internal/automation"
+	"github.com/spencerhhubert/long-compute-job-scheduler/internal/domain"
 	"github.com/spencerhhubert/long-compute-job-scheduler/internal/httpapi"
 	sqlitestore "github.com/spencerhhubert/long-compute-job-scheduler/internal/store/sqlite"
 	workeragent "github.com/spencerhhubert/long-compute-job-scheduler/internal/worker"

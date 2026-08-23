@@ -99,23 +99,23 @@ type Artifact struct {
 }
 
 type WebhookDeliveryStatus struct {
-	ID            string     `json:"id"`
-	State         string     `json:"state"`
-	AttemptCount  uint32     `json:"attempt_count"`
-	ResponseCode  *int       `json:"response_code,omitempty"`
-	LastError     string     `json:"last_error,omitempty"`
-	DeliveredAt   *time.Time `json:"delivered_at,omitempty"`
+	ID           string     `json:"id"`
+	State        string     `json:"state"`
+	AttemptCount uint32     `json:"attempt_count"`
+	ResponseCode *int       `json:"response_code,omitempty"`
+	LastError    string     `json:"last_error,omitempty"`
+	DeliveredAt  *time.Time `json:"delivered_at,omitempty"`
 }
 
 type HealthFiring struct {
-	ID           string                `json:"id"`
-	AttemptID    string                `json:"attempt_id"`
-	PolicyIndex  uint32                `json:"policy_index"`
-	Kind         string                `json:"kind"`
-	Target       string                `json:"target"`
-	Reason       string                `json:"reason"`
-	CreatedAt    time.Time             `json:"created_at"`
-	Delivery     WebhookDeliveryStatus `json:"delivery"`
+	ID          string                `json:"id"`
+	AttemptID   string                `json:"attempt_id"`
+	PolicyIndex uint32                `json:"policy_index"`
+	Kind        string                `json:"kind"`
+	Target      string                `json:"target"`
+	Reason      string                `json:"reason"`
+	CreatedAt   time.Time             `json:"created_at"`
+	Delivery    WebhookDeliveryStatus `json:"delivery"`
 }
 
 type JobDetail struct {
