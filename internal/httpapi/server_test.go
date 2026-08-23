@@ -83,7 +83,7 @@ func TestConsoleLoginPersistsSecureSessionAndShowsJobState(t *testing.T) {
 		t.Fatalf("Content-Security-Policy = %q", policy)
 	}
 	body := dashboardResponse.Body.String()
-	for _, expected := range []string{"Control plane online", "train-baseline", "example-research", "No workers enrolled", "test browser"} {
+	for _, expected := range []string{"Control plane online", "train-baseline", "example-research", "Human best", "94.5%", "No workers enrolled", "test browser"} {
 		if !strings.Contains(body, expected) {
 			t.Fatalf("dashboard does not contain %q: %s", expected, body)
 		}
@@ -196,6 +196,7 @@ func TestJobsRequireAuthenticationAndCreateIdempotently(t *testing.T) {
 }
 
 func testJobSpec() domain.JobSpec {
+	precision := uint8(1)
 	return domain.JobSpec{
 		Project: "example-research",
 		Name:    "train-baseline",
@@ -205,5 +206,12 @@ func testJobSpec() domain.JobSpec {
 		},
 		Command: []string{"python", "train.py"},
 		Retry:   domain.RetryPolicy{MaxAttempts: 1, LostWorker: domain.LostWorkerManual},
+		Metrics: []domain.MetricDefinition{{
+			Name: "accuracy", DisplayName: "Accuracy", Format: domain.MetricFormatPercent,
+			Precision: &precision, Objective: domain.MetricObjectiveMaximize,
+			ReferenceLines: []domain.MetricReferenceLine{{
+				Label: "Human best", Value: 0.945, Kind: domain.MetricReferenceBenchmark,
+			}},
+		}},
 	}
 }

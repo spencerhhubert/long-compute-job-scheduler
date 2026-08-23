@@ -5,6 +5,7 @@ package domain
 import (
 	"errors"
 	"fmt"
+	"math"
 	"regexp"
 	"strings"
 	"time"
@@ -84,20 +85,65 @@ type HealthPolicy struct {
 	Action       string  `json:"action"`
 }
 
+type MetricFormat string
+
+const (
+	MetricFormatNumber  MetricFormat = "number"
+	MetricFormatPercent MetricFormat = "percent"
+)
+
+type MetricObjective string
+
+const (
+	MetricObjectiveNone     MetricObjective = "none"
+	MetricObjectiveMaximize MetricObjective = "maximize"
+	MetricObjectiveMinimize MetricObjective = "minimize"
+)
+
+type MetricReferenceKind string
+
+const (
+	MetricReferenceGoal      MetricReferenceKind = "goal"
+	MetricReferenceBenchmark MetricReferenceKind = "benchmark"
+	MetricReferenceBaseline  MetricReferenceKind = "baseline"
+	MetricReferenceThreshold MetricReferenceKind = "threshold"
+)
+
+// MetricReferenceLine is a named horizontal annotation on a metric chart. It
+// is descriptive; actions triggered by metric values belong in HealthPolicy.
+type MetricReferenceLine struct {
+	Label string              `json:"label"`
+	Value float64             `json:"value"`
+	Kind  MetricReferenceKind `json:"kind"`
+}
+
+// MetricDefinition describes how one scalar series should be presented and
+// compared. Percent values use a raw scale from 0 through 1.
+type MetricDefinition struct {
+	Name           string                `json:"name"`
+	DisplayName    string                `json:"display_name,omitempty"`
+	Format         MetricFormat          `json:"format,omitempty"`
+	Unit           string                `json:"unit,omitempty"`
+	Precision      *uint8                `json:"precision,omitempty"`
+	Objective      MetricObjective       `json:"objective,omitempty"`
+	ReferenceLines []MetricReferenceLine `json:"reference_lines,omitempty"`
+}
+
 type JobSpec struct {
-	Project     string            `json:"project"`
-	Name        string            `json:"name"`
-	Priority    int32             `json:"priority"`
-	Source      Source            `json:"source"`
-	Command     []string          `json:"command"`
-	Environment map[string]string `json:"environment,omitempty"`
-	SecretRefs  map[string]string `json:"secret_refs,omitempty"`
-	Resources   ResourceRequest   `json:"resources"`
-	Constraints Constraints       `json:"constraints,omitempty"`
-	Retry       RetryPolicy       `json:"retry"`
-	Checkpoint  *CheckpointPolicy `json:"checkpoint,omitempty"`
-	Artifacts   []ArtifactRule    `json:"artifacts,omitempty"`
-	Health      []HealthPolicy    `json:"health,omitempty"`
+	Project     string             `json:"project"`
+	Name        string             `json:"name"`
+	Priority    int32              `json:"priority"`
+	Source      Source             `json:"source"`
+	Command     []string           `json:"command"`
+	Environment map[string]string  `json:"environment,omitempty"`
+	SecretRefs  map[string]string  `json:"secret_refs,omitempty"`
+	Resources   ResourceRequest    `json:"resources"`
+	Constraints Constraints        `json:"constraints,omitempty"`
+	Retry       RetryPolicy        `json:"retry"`
+	Checkpoint  *CheckpointPolicy  `json:"checkpoint,omitempty"`
+	Artifacts   []ArtifactRule     `json:"artifacts,omitempty"`
+	Metrics     []MetricDefinition `json:"metrics,omitempty"`
+	Health      []HealthPolicy     `json:"health,omitempty"`
 }
 
 type Job struct {
@@ -112,6 +158,7 @@ type Job struct {
 var slugPattern = regexp.MustCompile(`^[a-z0-9][a-z0-9._-]{0,62}$`)
 var commitPattern = regexp.MustCompile(`^(?:[0-9a-fA-F]{40}|[0-9a-fA-F]{64})$`)
 var envPattern = regexp.MustCompile(`^[A-Za-z_][A-Za-z0-9_]*$`)
+var metricPattern = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9._/-]{0,126}[A-Za-z0-9]$|^[A-Za-z0-9]$`)
 
 func (spec JobSpec) Validate() error {
 	var errs []error
@@ -178,6 +225,70 @@ func (spec JobSpec) Validate() error {
 	for i, artifact := range spec.Artifacts {
 		if !slugPattern.MatchString(artifact.Name) || strings.TrimSpace(artifact.Glob) == "" {
 			errs = append(errs, fmt.Errorf("artifacts[%d] requires a slug name and non-empty glob", i))
+		}
+	}
+	if len(spec.Metrics) > 64 {
+		errs = append(errs, errors.New("metrics may contain at most 64 definitions"))
+	}
+	metricNames := make(map[string]struct{}, len(spec.Metrics))
+	for i, metric := range spec.Metrics {
+		path := fmt.Sprintf("metrics[%d]", i)
+		if !metricPattern.MatchString(metric.Name) {
+			errs = append(errs, fmt.Errorf("%s.name must contain 1 to 128 letters, numbers, dots, underscores, slashes, or hyphens", path))
+		} else if _, exists := metricNames[metric.Name]; exists {
+			errs = append(errs, fmt.Errorf("%s.name %q is duplicated", path, metric.Name))
+		} else {
+			metricNames[metric.Name] = struct{}{}
+		}
+		if len(metric.DisplayName) > 100 {
+			errs = append(errs, fmt.Errorf("%s.display_name must be at most 100 characters", path))
+		}
+		format := metric.Format
+		if format == "" {
+			format = MetricFormatNumber
+		}
+		if format != MetricFormatNumber && format != MetricFormatPercent {
+			errs = append(errs, fmt.Errorf("%s.format must be %q or %q", path, MetricFormatNumber, MetricFormatPercent))
+		}
+		if len(metric.Unit) > 24 {
+			errs = append(errs, fmt.Errorf("%s.unit must be at most 24 characters", path))
+		}
+		if format == MetricFormatPercent && metric.Unit != "" {
+			errs = append(errs, fmt.Errorf("%s.unit must be empty when format is %q", path, MetricFormatPercent))
+		}
+		if metric.Precision != nil && *metric.Precision > 9 {
+			errs = append(errs, fmt.Errorf("%s.precision must be between 0 and 9", path))
+		}
+		objective := metric.Objective
+		if objective == "" {
+			objective = MetricObjectiveNone
+		}
+		if objective != MetricObjectiveNone && objective != MetricObjectiveMaximize && objective != MetricObjectiveMinimize {
+			errs = append(errs, fmt.Errorf("%s.objective must be %q, %q, or %q", path, MetricObjectiveNone, MetricObjectiveMaximize, MetricObjectiveMinimize))
+		}
+		if len(metric.ReferenceLines) > 16 {
+			errs = append(errs, fmt.Errorf("%s.reference_lines may contain at most 16 entries", path))
+		}
+		lineLabels := make(map[string]struct{}, len(metric.ReferenceLines))
+		for lineIndex, line := range metric.ReferenceLines {
+			linePath := fmt.Sprintf("%s.reference_lines[%d]", path, lineIndex)
+			label := strings.TrimSpace(line.Label)
+			if label == "" || len(label) > 100 {
+				errs = append(errs, fmt.Errorf("%s.label must contain between 1 and 100 characters", linePath))
+			} else if _, exists := lineLabels[strings.ToLower(label)]; exists {
+				errs = append(errs, fmt.Errorf("%s.label %q is duplicated", linePath, label))
+			} else {
+				lineLabels[strings.ToLower(label)] = struct{}{}
+			}
+			if math.IsNaN(line.Value) || math.IsInf(line.Value, 0) {
+				errs = append(errs, fmt.Errorf("%s.value must be finite", linePath))
+			}
+			if format == MetricFormatPercent && (line.Value < 0 || line.Value > 1) {
+				errs = append(errs, fmt.Errorf("%s.value must be between 0 and 1 for percent metrics", linePath))
+			}
+			if line.Kind != MetricReferenceGoal && line.Kind != MetricReferenceBenchmark && line.Kind != MetricReferenceBaseline && line.Kind != MetricReferenceThreshold {
+				errs = append(errs, fmt.Errorf("%s.kind must be %q, %q, %q, or %q", linePath, MetricReferenceGoal, MetricReferenceBenchmark, MetricReferenceBaseline, MetricReferenceThreshold))
+			}
 		}
 	}
 

@@ -50,6 +50,23 @@ var pageFunctions = template.FuncMap{
 		}
 		return strings.Join(parts, " · ")
 	},
+	"metricName": func(metric domain.MetricDefinition) string {
+		if metric.DisplayName != "" {
+			return metric.DisplayName
+		}
+		return metric.Name
+	},
+	"metricObjective": func(objective domain.MetricObjective) string {
+		switch objective {
+		case domain.MetricObjectiveMaximize:
+			return "↑ maximize"
+		case domain.MetricObjectiveMinimize:
+			return "↓ minimize"
+		default:
+			return ""
+		}
+	},
+	"metricValue": formatMetricValue,
 }
 
 func formatCount(count uint32, unit string) string {
@@ -57,6 +74,25 @@ func formatCount(count uint32, unit string) string {
 		return "1 " + unit
 	}
 	return strconv.FormatUint(uint64(count), 10) + " " + unit
+}
+
+func formatMetricValue(metric domain.MetricDefinition, value float64) string {
+	precision := 3
+	if metric.Format == domain.MetricFormatPercent {
+		precision = 1
+		value *= 100
+	}
+	if metric.Precision != nil {
+		precision = int(*metric.Precision)
+	}
+	formatted := strconv.FormatFloat(value, 'f', precision, 64)
+	if metric.Format == domain.MetricFormatPercent {
+		return formatted + "%"
+	}
+	if metric.Unit != "" {
+		return formatted + " " + metric.Unit
+	}
+	return formatted
 }
 
 var loginTemplate = template.Must(template.New("login").Parse(`<!doctype html>
@@ -139,7 +175,7 @@ var dashboardTemplate = template.Must(template.New("dashboard").Funcs(pageFuncti
       <div class="panel-header"><h2 id="jobs-title">Jobs</h2><span>{{len .Jobs}} total shown</span></div>
       <div class="table-scroll">
         <table>
-          <thead><tr><th>State</th><th>Job</th><th>Project</th><th>Resources</th><th>Priority</th><th>Created</th></tr></thead>
+          <thead><tr><th>State</th><th>Job</th><th>Project</th><th>Resources</th><th>Metrics &amp; references</th><th>Priority</th><th>Created</th></tr></thead>
           <tbody>
             {{range .Jobs}}
             <tr>
@@ -147,11 +183,19 @@ var dashboardTemplate = template.Must(template.New("dashboard").Funcs(pageFuncti
               <td><strong>{{.Spec.Name}}</strong><small title="{{.ID}}">{{.ID}}</small><small class="command" title="{{command .Spec.Command}}">{{command .Spec.Command}}</small></td>
               <td>{{.Spec.Project}}</td>
               <td>{{resources .Spec.Resources}}</td>
+              <td>
+                {{if .Spec.Metrics}}<div class="metric-list">
+                  {{range $metric := .Spec.Metrics}}<div class="metric-definition">
+                    <div><strong>{{metricName $metric}}</strong>{{with metricObjective $metric.Objective}}<small class="objective">{{.}}</small>{{end}}</div>
+                    {{range $line := $metric.ReferenceLines}}<span class="reference-line" data-kind="{{$line.Kind}}"><i aria-hidden="true"></i>{{$line.Label}} <b>{{metricValue $metric $line.Value}}</b></span>{{else}}<span class="no-reference">No reference lines</span>{{end}}
+                  </div>{{end}}
+                </div>{{else}}—{{end}}
+              </td>
               <td class="numeric">{{.Spec.Priority}}</td>
               <td><time datetime="{{isoTime .CreatedAt}}">{{jobTime .CreatedAt}}</time></td>
             </tr>
             {{else}}
-            <tr><td class="empty" colspan="6">No jobs submitted.</td></tr>
+            <tr><td class="empty" colspan="7">No jobs submitted.</td></tr>
             {{end}}
           </tbody>
         </table>
@@ -270,6 +314,18 @@ tbody tr:hover td { background: var(--panel-alt); }
 td strong { display: block; font-weight: 650; }
 td small { display: block; max-width: 360px; overflow: hidden; color: var(--muted); font: 10px/1.35 ui-monospace, SFMono-Regular, Consolas, monospace; text-overflow: ellipsis; }
 td small.command { max-width: 440px; margin-top: 2px; }
+.metric-list { display: grid; gap: 5px; min-width: 190px; white-space: normal; }
+.metric-definition { display: grid; gap: 2px; }
+.metric-definition > div { display: flex; align-items: baseline; gap: 6px; }
+.metric-definition strong { display: inline; font-size: 11px; }
+.metric-definition .objective { display: inline; color: var(--muted); font: 9px ui-sans-serif, system-ui, sans-serif; text-transform: uppercase; }
+.reference-line { display: inline-flex; align-items: center; gap: 5px; color: var(--muted); font-size: 10px; }
+.reference-line i { width: 16px; height: 0; border-top: 1px dashed var(--accent); }
+.reference-line[data-kind="goal"] i { border-top-style: solid; border-top-width: 2px; }
+.reference-line[data-kind="baseline"] i { border-top-color: var(--border-strong); }
+.reference-line[data-kind="threshold"] i { border-top-color: var(--danger); }
+.reference-line b { color: var(--text); font-variant-numeric: tabular-nums; }
+.no-reference { color: var(--muted); font-size: 10px; }
 .numeric { text-align: right; font-variant-numeric: tabular-nums; }
 .state { display: inline-block; padding: 1px 6px; border: 1px solid var(--border-strong); border-radius: 10px; font-size: 10px; font-weight: 700; }
 .state[data-state="running"], .state[data-state="succeeded"] { border-color: var(--success); background: var(--success-bg); color: var(--success); }

@@ -23,7 +23,18 @@ func validSpec() JobSpec {
 }
 
 func TestJobSpecValidate(t *testing.T) {
-	if err := validSpec().Validate(); err != nil {
+	spec := validSpec()
+	precision := uint8(1)
+	spec.Metrics = []MetricDefinition{{
+		Name: "validation/accuracy", DisplayName: "Accuracy",
+		Format: MetricFormatPercent, Precision: &precision,
+		Objective: MetricObjectiveMaximize,
+		ReferenceLines: []MetricReferenceLine{
+			{Label: "Human best", Value: 0.945, Kind: MetricReferenceBenchmark},
+			{Label: "Goal", Value: 0.96, Kind: MetricReferenceGoal},
+		},
+	}}
+	if err := spec.Validate(); err != nil {
 		t.Fatalf("valid spec: %v", err)
 	}
 }
@@ -38,6 +49,32 @@ func TestJobSpecValidateRejectsAmbiguousSourceAndReservedEnvironment(t *testing.
 		t.Fatal("expected validation error")
 	}
 	for _, want := range []string{"exactly one", "reserved LCJS_"} {
+		if !strings.Contains(err.Error(), want) {
+			t.Errorf("error %q does not contain %q", err, want)
+		}
+	}
+}
+
+func TestJobSpecValidateRejectsInvalidMetricDefinitions(t *testing.T) {
+	spec := validSpec()
+	tooPrecise := uint8(10)
+	spec.Metrics = []MetricDefinition{
+		{
+			Name: "accuracy", Format: MetricFormatPercent, Unit: "%", Precision: &tooPrecise,
+			Objective: "largest",
+			ReferenceLines: []MetricReferenceLine{
+				{Label: "Human best", Value: 94.5, Kind: MetricReferenceBenchmark},
+				{Label: "human BEST", Value: 0.95, Kind: "comparison"},
+			},
+		},
+		{Name: "accuracy"},
+	}
+
+	err := spec.Validate()
+	if err == nil {
+		t.Fatal("expected validation error")
+	}
+	for _, want := range []string{"duplicated", "unit must be empty", "precision", "objective", "between 0 and 1", "kind must be"} {
 		if !strings.Contains(err.Error(), want) {
 			t.Errorf("error %q does not contain %q", err, want)
 		}

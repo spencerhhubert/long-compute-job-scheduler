@@ -57,6 +57,7 @@ fleet produces deterministic placements and clear unschedulable reasons.
 
 ## 5. Telemetry, policies, and notifications
 
+- Job-defined metric presentation, objectives, and named reference lines
 - Metric batching, roll-ups, and retention
 - Health-policy evaluator with dry-run explanations
 - Durable signed webhook delivery with retry and dead-letter visibility

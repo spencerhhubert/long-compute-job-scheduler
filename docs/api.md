@@ -67,6 +67,17 @@ Example job submission:
     "resume_command": ["python", "train.py", "--resume", "${LCJS_CHECKPOINT}"]
   },
   "artifacts": [{"name": "checkpoints", "glob": "checkpoints/*.pt"}],
+  "metrics": [{
+    "name": "validation/accuracy",
+    "display_name": "Validation accuracy",
+    "format": "percent",
+    "precision": 1,
+    "objective": "maximize",
+    "reference_lines": [
+      {"kind": "benchmark", "label": "Human best", "value": 0.945},
+      {"kind": "goal", "label": "Project goal", "value": 0.960}
+    ]
+  }],
   "health": [{
     "kind": "metric_stalled",
     "metric": "validation/loss",
@@ -155,6 +166,12 @@ Payload size, event count, and sync duration are bounded.
 Metrics are timestamped scalar samples with a name, step, value, and small tag
 set. The worker aggregates configured high-rate series before upload. Binary
 payloads are never embedded in metric events.
+
+Job specifications may declare metric presentation, optimization direction,
+and named reference lines such as goals, benchmarks, baselines, and thresholds.
+Percent metrics use fractional raw values from 0 through 1. Reference lines are
+chart annotations; health policies remain the mechanism for automated actions.
+See the [metrics guide](metrics.md) for the full contract.
 
 Logs are announced as bounded chunks with stream, byte range, checksum, and
 retention class. Small chunks may be uploaded; large logs use the artifact

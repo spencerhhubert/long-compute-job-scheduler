@@ -26,8 +26,8 @@ The authenticated console is available at
 - Large outputs stay in a configured artifact store. The central database holds
   portable metadata and locations, not machine-specific absolute paths.
 
-See [the architecture](docs/architecture.md), [API draft](docs/api.md), and
-[implementation roadmap](docs/roadmap.md).
+See [the architecture](docs/architecture.md), [API draft](docs/api.md),
+[metrics guide](docs/metrics.md), and [implementation roadmap](docs/roadmap.md).
 
 ## Development quick start
 

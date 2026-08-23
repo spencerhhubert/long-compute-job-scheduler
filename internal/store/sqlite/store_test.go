@@ -13,6 +13,7 @@ import (
 )
 
 func testSpec() domain.JobSpec {
+	precision := uint8(2)
 	return domain.JobSpec{
 		Project: "example-research",
 		Name:    "train-baseline",
@@ -25,6 +26,13 @@ func testSpec() domain.JobSpec {
 			MaxAttempts: 1,
 			LostWorker:  domain.LostWorkerManual,
 		},
+		Metrics: []domain.MetricDefinition{{
+			Name: "validation/accuracy", Format: domain.MetricFormatPercent,
+			Precision: &precision, Objective: domain.MetricObjectiveMaximize,
+			ReferenceLines: []domain.MetricReferenceLine{{
+				Label: "Goal", Value: 0.95, Kind: domain.MetricReferenceGoal,
+			}},
+		}},
 	}
 }
 
@@ -63,7 +71,7 @@ func TestCreateJobIsDurableAndIdempotent(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if got.State != domain.JobQueued || got.Spec.Name != created.Job.Spec.Name {
+	if got.State != domain.JobQueued || got.Spec.Name != created.Job.Spec.Name || len(got.Spec.Metrics) != 1 || got.Spec.Metrics[0].ReferenceLines[0].Value != 0.95 {
 		t.Fatalf("reopened job = %+v", got)
 	}
 }
