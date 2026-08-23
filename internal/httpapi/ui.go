@@ -102,7 +102,7 @@ var loginTemplate = template.Must(template.New("login").Parse(`<!doctype html>
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <meta name="color-scheme" content="light dark">
   <title>Sign in · Compute Jobs</title>
-  <link rel="stylesheet" href="/static/app.css">
+  <link rel="stylesheet" href="/static/app.css?v=2">
   <script src="/static/theme.js"></script>
 </head>
 <body>
@@ -140,7 +140,7 @@ var dashboardTemplate = template.Must(template.New("dashboard").Funcs(pageFuncti
   <meta name="color-scheme" content="light dark">
   <meta http-equiv="refresh" content="30">
   <title>Compute Jobs</title>
-  <link rel="stylesheet" href="/static/app.css">
+  <link rel="stylesheet" href="/static/app.css?v=2">
   <script src="/static/theme.js"></script>
 </head>
 <body>

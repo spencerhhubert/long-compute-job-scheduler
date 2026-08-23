@@ -44,6 +44,9 @@ func TestConsoleLoginPersistsSecureSessionAndShowsJobState(t *testing.T) {
 	if body := loginPageResponse.Body.String(); !strings.Contains(body, "Operator sign in") || !strings.Contains(body, `data-theme="light"`) {
 		t.Fatalf("login page = %q", body)
 	}
+	if !strings.Contains(loginPageResponse.Body.String(), `/static/app.css?v=2`) {
+		t.Fatal("login page does not use the current stylesheet version")
+	}
 
 	const operatorKey = "lcjs_0123456789abcdef0123456789abcdef0123456789abc"
 	if _, err := store.CreateAPIToken(context.Background(), "test browser", operatorKey); err != nil {
