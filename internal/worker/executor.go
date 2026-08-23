@@ -16,6 +16,7 @@ import (
 	"strings"
 	"syscall"
 	"time"
+	"unicode/utf8"
 
 	"github.com/spencerhhubert/long-compute-job-scheduler/internal/domain"
 )
@@ -338,10 +339,31 @@ func collectArtifacts(workerID, artifactRoot string, command StoredCommand) ([]d
 				return nil, err
 			}
 			uri := workerURI(workerID, command.Command, filepath.ToSlash(filepath.Join(rule.Name, relative)))
-			announcements = append(announcements, domain.ArtifactAnnouncement{Name: rule.Name, URI: uri, SizeBytes: size, SHA256: checksum})
+			announcements = append(announcements, domain.ArtifactAnnouncement{
+				Name: rule.Name, URI: uri, SizeBytes: size, SHA256: checksum,
+				Content: inlineArtifactContent(destination, size),
+			})
 		}
 	}
 	return announcements, nil
+}
+
+// maxInlineArtifactBytes bounds the artifact content a worker inlines into an
+// announcement so small text results can be previewed on the job page.
+const maxInlineArtifactBytes = 64 << 10
+
+// inlineArtifactContent returns the artifact's full bytes when the file is at
+// most maxInlineArtifactBytes of valid UTF-8 text, and "" otherwise, so larger
+// or binary artifacts announce metadata only.
+func inlineArtifactContent(path string, size int64) string {
+	if size == 0 || size > maxInlineArtifactBytes {
+		return ""
+	}
+	data, err := os.ReadFile(path)
+	if err != nil || int64(len(data)) != size || !utf8.Valid(data) {
+		return ""
+	}
+	return string(data)
 }
 
 func copyArtifact(sourcePath, destination string) (int64, string, error) {
