@@ -186,6 +186,23 @@ func (s *Store) CreateJob(ctx context.Context, key string, spec domain.JobSpec) 
 	if !errors.Is(err, sql.ErrNoRows) {
 		return CreateJobResult{}, fmt.Errorf("read idempotency key: %w", err)
 	}
+	checkedTargets := make(map[string]struct{})
+	for _, policy := range spec.Health {
+		if _, checked := checkedTargets[policy.Target]; checked {
+			continue
+		}
+		var exists int
+		err := tx.QueryRowContext(ctx, `
+			SELECT 1 FROM webhook_targets WHERE name = ? AND revoked_at IS NULL
+		`, policy.Target).Scan(&exists)
+		if errors.Is(err, sql.ErrNoRows) {
+			return CreateJobResult{}, fmt.Errorf("validate job: health target %q is not configured", policy.Target)
+		}
+		if err != nil {
+			return CreateJobResult{}, fmt.Errorf("validate job health target: %w", err)
+		}
+		checkedTargets[policy.Target] = struct{}{}
+	}
 
 	jobID, err := id.New("job")
 	if err != nil {

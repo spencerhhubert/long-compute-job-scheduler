@@ -84,7 +84,8 @@ Example job submission:
     "mode": "min",
     "window": "1h",
     "minimum_delta": 0.001,
-    "action": "notify"
+    "action": "notify",
+    "target": "research-session"
   }]
 }
 ```

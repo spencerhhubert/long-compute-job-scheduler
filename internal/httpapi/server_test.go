@@ -219,7 +219,7 @@ func TestJobsRequireAuthenticationAndCreateIdempotently(t *testing.T) {
 	if err := json.Unmarshal(detailResponse.Body.Bytes(), &detail); err != nil {
 		t.Fatal(err)
 	}
-	if detail.Job.ID != createdID || detail.Attempts == nil || detail.Metrics == nil || detail.Artifacts == nil {
+	if detail.Job.ID != createdID || detail.Attempts == nil || detail.Metrics == nil || detail.Artifacts == nil || detail.Health == nil {
 		t.Fatalf("job detail = %+v", detail)
 	}
 	cancelRequest := httptest.NewRequest(http.MethodPost, "/api/v1/jobs/"+createdID+"/cancel", nil)

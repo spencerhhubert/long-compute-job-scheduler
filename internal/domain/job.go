@@ -84,7 +84,16 @@ type HealthPolicy struct {
 	Window       string  `json:"window,omitempty"`
 	MinimumDelta float64 `json:"minimum_delta,omitempty"`
 	Action       string  `json:"action"`
+	Target       string  `json:"target"`
 }
+
+const (
+	HealthKindMetricStalled = "metric_stalled"
+	HealthKindPeriodic      = "periodic"
+	HealthModeMax           = "max"
+	HealthModeMin           = "min"
+	HealthActionNotify      = "notify"
+)
 
 type MetricFormat string
 
@@ -294,6 +303,40 @@ func (spec JobSpec) Validate() error {
 			if line.Kind != MetricReferenceGoal && line.Kind != MetricReferenceBenchmark && line.Kind != MetricReferenceBaseline && line.Kind != MetricReferenceThreshold {
 				errs = append(errs, fmt.Errorf("%s.kind must be %q, %q, %q, or %q", linePath, MetricReferenceGoal, MetricReferenceBenchmark, MetricReferenceBaseline, MetricReferenceThreshold))
 			}
+		}
+	}
+	if len(spec.Health) > 16 {
+		errs = append(errs, errors.New("health may contain at most 16 policies"))
+	}
+	for i, policy := range spec.Health {
+		path := fmt.Sprintf("health[%d]", i)
+		window, err := time.ParseDuration(policy.Window)
+		if err != nil || window < 10*time.Second || window > 30*24*time.Hour {
+			errs = append(errs, fmt.Errorf("%s.window must be a duration from 10s through 720h", path))
+		}
+		if policy.Action != HealthActionNotify {
+			errs = append(errs, fmt.Errorf("%s.action must currently be %q", path, HealthActionNotify))
+		}
+		if !slugPattern.MatchString(policy.Target) {
+			errs = append(errs, fmt.Errorf("%s.target must be a configured target slug", path))
+		}
+		switch policy.Kind {
+		case HealthKindMetricStalled:
+			if _, exists := metricNames[policy.Metric]; !exists {
+				errs = append(errs, fmt.Errorf("%s.metric must name a declared metric", path))
+			}
+			if policy.Mode != HealthModeMax && policy.Mode != HealthModeMin {
+				errs = append(errs, fmt.Errorf("%s.mode must be %q or %q", path, HealthModeMax, HealthModeMin))
+			}
+			if math.IsNaN(policy.MinimumDelta) || math.IsInf(policy.MinimumDelta, 0) || policy.MinimumDelta < 0 {
+				errs = append(errs, fmt.Errorf("%s.minimum_delta must be a non-negative finite number", path))
+			}
+		case HealthKindPeriodic:
+			if policy.Metric != "" || policy.Mode != "" || policy.MinimumDelta != 0 {
+				errs = append(errs, fmt.Errorf("%s periodic policy may contain only kind, window, action, and target", path))
+			}
+		default:
+			errs = append(errs, fmt.Errorf("%s.kind must be %q or %q", path, HealthKindMetricStalled, HealthKindPeriodic))
 		}
 	}
 

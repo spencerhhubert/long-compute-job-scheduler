@@ -35,8 +35,8 @@ marks three horizontal comparisons:
 ```
 
 Put `metrics` at the top level of the immutable job specification submitted to
-`POST /api/v1/jobs`. The dashboard immediately lists the configured metrics
-and references for that job.
+`POST /api/v1/jobs`. The dashboard lists the configured metrics and references,
+then plots reported samples against those horizontal lines.
 
 With the complete job specification saved as `job.json`, submit it with:
 
@@ -77,15 +77,15 @@ All reference values use the same raw scale as samples. In particular,
 `0.945`, not `94.5`.
 
 Reference lines are annotations, not automation. `objective` tells comparison
-and chart code which direction is better, but it does not stop a job. Use a
-job `health` policy for alerts, cancellation, retry, or checkpoint-and-stop
-behavior.
+and chart code which direction is better, but it does not stop a job. Use a job
+`health` policy for durable alerts. Cancellation, retry, and
+checkpoint-and-stop actions remain planned extensions of that policy path.
 
 ## Reporting samples
 
 Metric samples use the definition's exact `name`, a finite scalar `value`, and
 either a monotonically increasing `step` or an observation time. The worker
-telemetry payload will use this shape:
+telemetry payload uses this shape:
 
 ```json
 {
@@ -96,12 +96,21 @@ telemetry payload will use this shape:
 }
 ```
 
-The current control-plane slice stores and displays metric definitions and
-their reference lines. Sample ingestion, roll-ups, and time-series charts are
-part of the durable worker telemetry slice; job code should keep emitting the
-stable name and raw scale above so those samples can be connected without
-changing the job contract.
+The worker sets `LCJS_METRICS_FILE` for every attempt. The installed binary
+provides a convenient append-and-sync command:
 
-When chart samples are available, the renderer must include both observed and
-reference values in the y-axis domain, label each line, preserve its `kind`,
-and show the latest/best value relative to the declared objective.
+```sh
+lcjs metric --name validation/accuracy --value 0.947 --step 1200
+```
+
+Libraries may append one JSON object per line directly to that path. A newline
+commits a sample; a partial line is left unread until it is complete. The worker
+stores its byte offset and unsent samples in SQLite, batches them into outbound
+sync, and deletes them only after the control plane acknowledges a durable
+commit.
+
+The renderer includes both observed and reference values in the y-axis domain,
+labels each line, preserves its `kind`, and shows the latest value relative to
+the declared objective. High-rate roll-ups and retention limits remain future
+work; callers should report meaningful checkpoints rather than every inner
+loop operation.
