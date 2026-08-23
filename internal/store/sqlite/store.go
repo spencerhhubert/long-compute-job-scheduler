@@ -23,6 +23,7 @@ import (
 var (
 	ErrNotFound            = errors.New("not found")
 	ErrIdempotencyConflict = errors.New("idempotency key reused with a different request")
+	ErrInvalidTransition   = errors.New("invalid state transition")
 )
 
 //go:embed migrations/*.sql
@@ -231,6 +232,42 @@ func (s *Store) CreateJob(ctx context.Context, key string, spec domain.JobSpec) 
 
 func (s *Store) GetJob(ctx context.Context, jobID string) (domain.Job, error) {
 	return getJob(ctx, s.db, jobID)
+}
+
+func (s *Store) CancelJob(ctx context.Context, jobID string) (domain.Job, error) {
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return domain.Job{}, fmt.Errorf("begin cancel job: %w", err)
+	}
+	defer tx.Rollback()
+	job, err := getJob(ctx, tx, jobID)
+	if err != nil {
+		return domain.Job{}, err
+	}
+	if job.State == domain.JobCanceled {
+		return job, nil
+	}
+	if job.State != domain.JobQueued && job.State != domain.JobRetryWait {
+		return domain.Job{}, fmt.Errorf("%w: cannot cancel job in state %s", ErrInvalidTransition, job.State)
+	}
+	now := s.now().UTC()
+	result, err := tx.ExecContext(ctx, `
+		UPDATE jobs SET state = ?, revision = revision + 1, updated_at = ?
+		WHERE id = ? AND revision = ? AND state IN (?, ?)
+	`, domain.JobCanceled, formatTime(now), job.ID, job.Revision, domain.JobQueued, domain.JobRetryWait)
+	if err != nil {
+		return domain.Job{}, fmt.Errorf("cancel job: %w", err)
+	}
+	if changed, err := result.RowsAffected(); err != nil || changed != 1 {
+		return domain.Job{}, fmt.Errorf("%w: job changed while canceling", ErrInvalidTransition)
+	}
+	if err := appendControlEvent(ctx, tx, "job_canceled", job.ID, map[string]any{"job_id": job.ID}, now); err != nil {
+		return domain.Job{}, fmt.Errorf("record cancellation: %w", err)
+	}
+	if err := tx.Commit(); err != nil {
+		return domain.Job{}, fmt.Errorf("commit cancellation: %w", err)
+	}
+	return s.GetJob(ctx, job.ID)
 }
 
 func (s *Store) ListJobs(ctx context.Context, limit int) ([]domain.Job, error) {

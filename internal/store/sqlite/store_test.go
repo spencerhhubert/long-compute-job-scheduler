@@ -95,6 +95,30 @@ func TestCreateJobRejectsIdempotencyKeyReuse(t *testing.T) {
 	}
 }
 
+func TestCancelQueuedJobIsDurableAndIdempotent(t *testing.T) {
+	ctx := context.Background()
+	store, err := Open(ctx, filepath.Join(t.TempDir(), "control.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer store.Close()
+	created, err := store.CreateJob(ctx, "cancel-job", testSpec())
+	if err != nil {
+		t.Fatal(err)
+	}
+	canceled, err := store.CancelJob(ctx, created.Job.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if canceled.State != domain.JobCanceled || canceled.Revision != created.Job.Revision+1 {
+		t.Fatalf("canceled job = %+v", canceled)
+	}
+	repeated, err := store.CancelJob(ctx, created.Job.ID)
+	if err != nil || repeated.State != domain.JobCanceled || repeated.Revision != canceled.Revision {
+		t.Fatalf("repeated cancellation = %+v, %v", repeated, err)
+	}
+}
+
 func TestOperatorTokenAndBrowserSessionLifecycle(t *testing.T) {
 	ctx := context.Background()
 	store, err := Open(ctx, filepath.Join(t.TempDir(), "control.db"))

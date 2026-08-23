@@ -184,6 +184,34 @@ func TestJobsRequireAuthenticationAndCreateIdempotently(t *testing.T) {
 			t.Fatalf("replayed ID = %s, want %s", job.ID, createdID)
 		}
 	}
+	detailRequest := httptest.NewRequest(http.MethodGet, "/api/v1/jobs/"+createdID, nil)
+	detailRequest.Header.Set("Authorization", "Bearer "+testToken)
+	detailResponse := httptest.NewRecorder()
+	server.ServeHTTP(detailResponse, detailRequest)
+	if detailResponse.Code != http.StatusOK {
+		t.Fatalf("job detail status = %d: %s", detailResponse.Code, detailResponse.Body.String())
+	}
+	var detail domain.JobDetail
+	if err := json.Unmarshal(detailResponse.Body.Bytes(), &detail); err != nil {
+		t.Fatal(err)
+	}
+	if detail.Job.ID != createdID || detail.Attempts == nil || detail.Metrics == nil || detail.Artifacts == nil {
+		t.Fatalf("job detail = %+v", detail)
+	}
+	cancelRequest := httptest.NewRequest(http.MethodPost, "/api/v1/jobs/"+createdID+"/cancel", nil)
+	cancelRequest.Header.Set("Authorization", "Bearer "+testToken)
+	cancelResponse := httptest.NewRecorder()
+	server.ServeHTTP(cancelResponse, cancelRequest)
+	if cancelResponse.Code != http.StatusOK {
+		t.Fatalf("cancel status = %d: %s", cancelResponse.Code, cancelResponse.Body.String())
+	}
+	var canceled domain.Job
+	if err := json.Unmarshal(cancelResponse.Body.Bytes(), &canceled); err != nil {
+		t.Fatal(err)
+	}
+	if canceled.State != domain.JobCanceled {
+		t.Fatalf("canceled job = %+v", canceled)
+	}
 
 	const databaseToken = "lcjs_fedcba9876543210fedcba9876543210fedcba987654"
 	if _, err := store.CreateAPIToken(context.Background(), "api test", databaseToken); err != nil {
@@ -195,6 +223,58 @@ func TestJobsRequireAuthenticationAndCreateIdempotently(t *testing.T) {
 	server.ServeHTTP(databaseTokenResponse, databaseTokenRequest)
 	if databaseTokenResponse.Code != http.StatusOK {
 		t.Fatalf("database token status = %d: %s", databaseTokenResponse.Code, databaseTokenResponse.Body.String())
+	}
+}
+
+func TestWorkerSyncUsesWorkerBoundToken(t *testing.T) {
+	store, err := sqlitestore.Open(context.Background(), filepath.Join(t.TempDir(), "control.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer store.Close()
+	server, err := New(store, testToken)
+	if err != nil {
+		t.Fatal(err)
+	}
+	const workerToken = "lcjw_0123456789abcdef0123456789abcdef0123456789abc"
+	credential, err := store.CreateWorker(context.Background(), "worker-test", workerToken, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.CreateJob(context.Background(), "worker-http-job", testJobSpec()); err != nil {
+		t.Fatal(err)
+	}
+	syncBody, err := json.Marshal(domain.WorkerSyncRequest{
+		WorkerID: credential.WorkerID, SessionID: "session-test", AgentVersion: "test",
+		Capacity: domain.WorkerCapacity{CPU: 4, MaxParallel: 1},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	request := httptest.NewRequest(http.MethodPost, "/api/v1/worker/sync", bytes.NewReader(syncBody))
+	request.Header.Set("Authorization", "Bearer "+workerToken)
+	request.Header.Set("Content-Type", "application/json")
+	response := httptest.NewRecorder()
+	server.ServeHTTP(response, request)
+	if response.Code != http.StatusOK {
+		t.Fatalf("worker sync status = %d: %s", response.Code, response.Body.String())
+	}
+	var syncResponse domain.WorkerSyncResponse
+	if err := json.Unmarshal(response.Body.Bytes(), &syncResponse); err != nil {
+		t.Fatal(err)
+	}
+	if len(syncResponse.Commands) != 1 {
+		t.Fatalf("worker sync commands = %+v", syncResponse.Commands)
+	}
+
+	mismatch := domain.WorkerSyncRequest{WorkerID: "wrk_someone_else", SessionID: "session"}
+	mismatchBody, _ := json.Marshal(mismatch)
+	mismatchRequest := httptest.NewRequest(http.MethodPost, "/api/v1/worker/sync", bytes.NewReader(mismatchBody))
+	mismatchRequest.Header.Set("Authorization", "Bearer "+workerToken)
+	mismatchResponse := httptest.NewRecorder()
+	server.ServeHTTP(mismatchResponse, mismatchRequest)
+	if mismatchResponse.Code != http.StatusForbidden {
+		t.Fatalf("identity mismatch status = %d", mismatchResponse.Code)
 	}
 }
 

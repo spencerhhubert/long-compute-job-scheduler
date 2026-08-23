@@ -1,0 +1,29 @@
+[Unit]
+Description=Long Compute Job Scheduler worker
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=lcjs-worker
+Group=lcjs-worker
+EnvironmentFile=/etc/lcjs-worker/worker.env
+ExecStart=/usr/local/bin/lcjs worker run \
+  --server https://control.example.com \
+  --db /var/lib/lcjs-worker/worker.db \
+  --work-root /var/lib/lcjs-worker/work \
+  --artifact-root /srv/lcjs/artifacts \
+  --max-parallel 1
+Restart=always
+RestartSec=5s
+KillMode=process
+TimeoutStopSec=15s
+NoNewPrivileges=true
+PrivateDevices=false
+ProtectSystem=strict
+ProtectHome=true
+ReadWritePaths=/var/lib/lcjs-worker /srv/lcjs/artifacts
+UMask=0077
+
+[Install]
+WantedBy=multi-user.target

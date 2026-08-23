@@ -10,6 +10,11 @@ idempotent job submission, hashed operator tokens, persistent browser sessions,
 authenticated central reads, and a compact operational dashboard. Worker
 execution remains on the roadmap.
 
+> **Current limitation:** this build does not execute jobs. Submitted jobs are
+> durable records that remain queued because worker enrollment, dispatch, and
+> execution are not implemented yet. See the
+> [verified requirements checklist](docs/requirements.md) for exact status.
+
 The authenticated console is available at
 [compute-jobs.spencerhubert.info](https://compute-jobs.spencerhubert.info).
 
@@ -27,7 +32,8 @@ The authenticated console is available at
   portable metadata and locations, not machine-specific absolute paths.
 
 See [the architecture](docs/architecture.md), [API draft](docs/api.md),
-[metrics guide](docs/metrics.md), and [implementation roadmap](docs/roadmap.md).
+[metrics guide](docs/metrics.md), [verified requirements](docs/requirements.md),
+[worker setup](docs/worker.md), and [implementation roadmap](docs/roadmap.md).
 
 ## Development quick start
 
