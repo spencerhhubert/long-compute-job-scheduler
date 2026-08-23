@@ -98,7 +98,7 @@ func TestConsoleLoginPersistsSecureSessionAndShowsJobState(t *testing.T) {
 		t.Fatalf("Content-Security-Policy = %q", policy)
 	}
 	body := dashboardResponse.Body.String()
-	for _, expected := range []string{"Control plane online", "train-baseline", "example-research", "Human best", "94.5%", "worker-test", "4 CPUs", "host=entropy", "test-sha", "test browser", "/jobs/" + created.Job.ID} {
+	for _, expected := range []string{"Control plane online", "train-baseline", "example-research", "Human best", "94.5%", "worker-test", "4 CPU", "host=entropy", "test-sha", "test browser", "/jobs/" + created.Job.ID} {
 		if !strings.Contains(body, expected) {
 			t.Fatalf("dashboard does not contain %q: %s", expected, body)
 		}
