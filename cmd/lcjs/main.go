@@ -17,6 +17,7 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/spencerhhubert/long-compute-job-scheduler/internal/automation"
 	"github.com/spencerhhubert/long-compute-job-scheduler/internal/domain"
 	"github.com/spencerhhubert/long-compute-job-scheduler/internal/httpapi"
 	sqlitestore "github.com/spencerhhubert/long-compute-job-scheduler/internal/store/sqlite"
@@ -34,7 +35,7 @@ func main() {
 
 func run(arguments []string) error {
 	if len(arguments) == 0 {
-		return errors.New("usage: lcjs <server|token|version>")
+		return errors.New("usage: lcjs <server|token|worker|job|metric|hook|version>")
 	}
 	switch arguments[0] {
 	case "server":
@@ -47,12 +48,49 @@ func run(arguments []string) error {
 		return runSupervise(arguments[1:])
 	case "metric":
 		return runMetric(arguments[1:])
+	case "job":
+		return runJob(arguments[1:])
+	case "hook":
+		return runHook(arguments[1:])
 	case "version":
 		fmt.Println(version)
 		return nil
 	default:
-		return fmt.Errorf("unknown command %q; usage: lcjs <server|token|version>", arguments[0])
+		return fmt.Errorf("unknown command %q; usage: lcjs <server|token|worker|job|metric|hook|version>", arguments[0])
 	}
+}
+
+func runHook(arguments []string) error {
+	if len(arguments) == 0 || arguments[0] != "create" {
+		return errors.New("usage: lcjs hook create --db PATH --name NAME --url HTTPS_URL")
+	}
+	flags := flag.NewFlagSet("hook create", flag.ContinueOnError)
+	database := flags.String("db", "data/control.db", "control-plane SQLite database path")
+	name := flags.String("name", "", "stable webhook target name")
+	targetURL := flags.String("url", "", "HTTPS webhook destination")
+	if err := flags.Parse(arguments[1:]); err != nil {
+		return err
+	}
+	if flags.NArg() != 0 || *name == "" || *targetURL == "" {
+		return errors.New("usage: lcjs hook create --db PATH --name NAME --url HTTPS_URL")
+	}
+	secret, err := generateSecret("lcjh_")
+	if err != nil {
+		return err
+	}
+	ctx := context.Background()
+	store, err := sqlitestore.Open(ctx, *database)
+	if err != nil {
+		return err
+	}
+	defer store.Close()
+	if _, err := store.CreateWebhookTarget(ctx, *name, *targetURL, secret); err != nil {
+		return err
+	}
+	// The receiver needs this value to verify X-LCJS-Signature. It is shown
+	// exactly once and is stored only in the permission-restricted control DB.
+	fmt.Printf("LCJS_WEBHOOK_TARGET=%s\nLCJS_WEBHOOK_SECRET=%s\n", *name, secret)
+	return nil
 }
 
 func runMetric(arguments []string) error {
@@ -214,6 +252,7 @@ func runServer(arguments []string) error {
 		return err
 	}
 	defer store.Close()
+	go automation.New(store).Run(ctx)
 	handler, err := httpapi.New(store, token)
 	if err != nil {
 		return err

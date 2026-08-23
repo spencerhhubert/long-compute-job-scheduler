@@ -421,6 +421,18 @@ var jobTemplate = template.Must(template.New("job").Funcs(pageFunctions).Parse(`
         <tbody>{{range .Detail.Artifacts}}<tr><td><strong>{{.Name}}</strong></td><td class="numeric">{{.SizeBytes}} B</td><td><small class="wide">{{.SHA256}}</small></td><td><small class="wide">{{.URI}}</small></td><td>{{jobTime .CreatedAt}}</td></tr>{{else}}<tr><td class="empty" colspan="5">No artifacts recorded.</td></tr>{{end}}</tbody>
       </table></div>
     </section>
+
+    <section class="panel" aria-labelledby="health-title">
+      <div class="panel-header"><h2 id="health-title">Health &amp; notifications</h2><span>{{len .Detail.Health}} fired</span></div>
+      {{if .Detail.Job.Spec.Health}}<div class="table-scroll"><table>
+        <thead><tr><th>#</th><th>Kind</th><th>Metric</th><th>Window</th><th>Rule</th><th>Action</th><th>Target</th></tr></thead>
+        <tbody>{{range $index, $policy := .Detail.Job.Spec.Health}}<tr><td class="numeric">{{$index}}</td><td>{{$policy.Kind}}</td><td>{{if $policy.Metric}}{{$policy.Metric}}{{else}}—{{end}}</td><td>{{$policy.Window}}</td><td>{{if $policy.Mode}}{{$policy.Mode}} · Δ {{$policy.MinimumDelta}}{{else}}—{{end}}</td><td>{{$policy.Action}}</td><td><code>{{$policy.Target}}</code></td></tr>{{end}}</tbody>
+      </table></div>{{else}}<div class="empty-block"><strong>No health policies configured.</strong></div>{{end}}
+      {{if .Detail.Health}}<div class="table-scroll health-events"><table>
+        <thead><tr><th>Fired</th><th>Kind</th><th>Reason</th><th>Target</th><th>Delivery</th><th>Attempts</th><th>Response</th><th>Error</th></tr></thead>
+        <tbody>{{range .Detail.Health}}<tr><td>{{jobTime .CreatedAt}}</td><td>{{.Kind}}</td><td class="reason-cell">{{.Reason}}</td><td><code>{{.Target}}</code></td><td><span class="state" data-state="{{.Delivery.State}}">{{.Delivery.State}}</span></td><td class="numeric">{{.Delivery.AttemptCount}}</td><td class="numeric">{{exitCode .Delivery.ResponseCode}}</td><td class="error-cell">{{if .Delivery.LastError}}{{.Delivery.LastError}}{{else}}—{{end}}</td></tr>{{end}}</tbody>
+      </table></div>{{end}}
+    </section>
   </main>
 </body>
 </html>`))
@@ -545,8 +557,8 @@ td small.wide { max-width: 520px; }
 .no-reference { color: var(--muted); font-size: 10px; }
 .numeric { text-align: right; font-variant-numeric: tabular-nums; }
 .state { display: inline-block; padding: 1px 6px; border: 1px solid var(--border-strong); border-radius: 10px; font-size: 10px; font-weight: 700; }
-.state[data-state="running"], .state[data-state="succeeded"], .state[data-state="online"] { border-color: var(--success); background: var(--success-bg); color: var(--success); }
-.state[data-state="failed"], .state[data-state="canceled"], .state[data-state="offline"] { border-color: var(--danger); background: var(--danger-bg); color: var(--danger); }
+.state[data-state="running"], .state[data-state="succeeded"], .state[data-state="online"], .state[data-state="delivered"] { border-color: var(--success); background: var(--success-bg); color: var(--success); }
+.state[data-state="failed"], .state[data-state="canceled"], .state[data-state="offline"], .state[data-state="dead"] { border-color: var(--danger); background: var(--danger-bg); color: var(--danger); }
 .empty { height: 72px; color: var(--muted); text-align: center; vertical-align: middle; }
 .empty-block { display: flex; flex-direction: column; align-items: center; justify-content: center; min-height: 76px; padding: 14px; color: var(--muted); }
 .empty-block strong { color: var(--text); }
@@ -558,6 +570,8 @@ td small.wide { max-width: 520px; }
 .detail-grid code, .empty-block code { font: 11px ui-monospace, SFMono-Regular, Consolas, monospace; }
 .detail-grid small { display: block; overflow: hidden; color: var(--muted); font: 10px ui-monospace, SFMono-Regular, Consolas, monospace; text-overflow: ellipsis; }
 .error-cell { max-width: 360px; white-space: normal; color: var(--danger); }
+.reason-cell { max-width: 520px; white-space: normal; }
+.health-events { border-top: 1px solid var(--border); }
 .log-tail { border-top: 1px solid var(--border); }
 .log-tail summary { padding: 7px 10px; cursor: pointer; color: var(--muted); font-size: 11px; font-weight: 650; }
 .log-tail pre { max-height: 300px; margin: 0; overflow: auto; padding: 10px; background: var(--panel-alt); border-top: 1px solid var(--border); font: 11px/1.45 ui-monospace, SFMono-Regular, Consolas, monospace; white-space: pre-wrap; }

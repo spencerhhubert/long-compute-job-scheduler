@@ -34,8 +34,29 @@ func TestJobSpecValidate(t *testing.T) {
 			{Label: "Goal", Value: 0.96, Kind: MetricReferenceGoal},
 		},
 	}}
+	spec.Health = []HealthPolicy{{
+		Kind: HealthKindMetricStalled, Metric: "validation/accuracy", Mode: HealthModeMax,
+		Window: "30m", MinimumDelta: 0.001, Action: HealthActionNotify, Target: "research-session",
+	}}
 	if err := spec.Validate(); err != nil {
 		t.Fatalf("valid spec: %v", err)
+	}
+}
+
+func TestJobSpecValidateRejectsInvalidHealthPolicy(t *testing.T) {
+	spec := validSpec()
+	spec.Health = []HealthPolicy{{
+		Kind: HealthKindMetricStalled, Metric: "missing", Mode: "up", Window: "2s",
+		MinimumDelta: -1, Action: "cancel", Target: "Not A Slug",
+	}}
+	err := spec.Validate()
+	if err == nil {
+		t.Fatal("expected health policy validation error")
+	}
+	for _, want := range []string{"duration", "action", "target", "declared metric", "mode", "minimum_delta"} {
+		if !strings.Contains(err.Error(), want) {
+			t.Errorf("error %q does not contain %q", err, want)
+		}
 	}
 }
 
