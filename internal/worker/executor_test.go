@@ -3,8 +3,8 @@ package worker
 import (
 	"bytes"
 	"context"
-	"math"
 	"encoding/json"
+	"math"
 	"os"
 	"os/exec"
 	"path/filepath"
