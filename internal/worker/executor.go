@@ -10,6 +10,7 @@ import (
 	"fmt"
 	"io"
 	"log/slog"
+	"math"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -338,14 +339,34 @@ func (a *Agent) ingestMetrics(ctx context.Context, command StoredCommand) error 
 		if len(line) > 1<<20 {
 			return errors.New("metric line exceeds 1 MiB")
 		}
+		// A job writing one malformed line must not be able to stop the
+		// worker. Returning an error here failed the whole cycle, so the
+		// same line was re-read forever: no attempt was reaped, nothing was
+		// scheduled, and the queue looked healthy the entire time. One NaN
+		// from one training run cost twenty minutes of an idle GPU.
+		newOffset := offset + int64(len(line))
 		var sample domain.MetricSample
 		if err := json.Unmarshal([]byte(strings.TrimSpace(line)), &sample); err != nil {
-			return fmt.Errorf("decode metric line at offset %d: %w", offset, err)
+			slog.Warn("skipping an unreadable metric line",
+				"attempt", command.Command.AttemptID, "offset", offset, "error", err)
+			if err := a.store.SkipMetric(ctx, command.Command.CommandID, newOffset); err != nil {
+				return err
+			}
+			offset = newOffset
+			continue
+		}
+		if math.IsNaN(sample.Value) || math.IsInf(sample.Value, 0) {
+			slog.Warn("skipping a non-finite metric sample",
+				"attempt", command.Command.AttemptID, "name", sample.Name)
+			if err := a.store.SkipMetric(ctx, command.Command.CommandID, newOffset); err != nil {
+				return err
+			}
+			offset = newOffset
+			continue
 		}
 		if sample.ObservedAt.IsZero() {
 			sample.ObservedAt = time.Now().UTC()
 		}
-		newOffset := offset + int64(len(line))
 		if err := a.store.EnqueueMetric(ctx, command.Command.CommandID, command.Command.AttemptID, sample, newOffset); err != nil {
 			return err
 		}

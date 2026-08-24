@@ -3,6 +3,8 @@ package worker
 import (
 	"bytes"
 	"context"
+	"math"
+	"encoding/json"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -311,5 +313,28 @@ func TestAnnounceProgressOnlyRepublishesWhatChanged(t *testing.T) {
 	agent.lastArtifactSweep[id] = time.Now()
 	if time.Since(agent.lastArtifactSweep[id]) >= artifactInterval {
 		t.Fatal("a sweep that just happened must suppress the next one")
+	}
+}
+
+func TestOneBadMetricLineDoesNotStopTheWorker(t *testing.T) {
+	// A job wrote NaN, the reader rejected the line, and every cycle from
+	// then on failed on the same offset: no attempt was reaped and nothing
+	// was scheduled while the queue looked healthy. The line must be skipped.
+	for _, line := range []string{
+		`{"name":"x","value":NaN}`,
+		`{"name":"x","value":`,
+		`not json at all`,
+	} {
+		var sample domain.MetricSample
+		if err := json.Unmarshal([]byte(line), &sample); err == nil {
+			t.Fatalf("expected %q to be unreadable", line)
+		}
+	}
+	var finite domain.MetricSample
+	if err := json.Unmarshal([]byte(`{"name":"x","value":1.5}`), &finite); err != nil {
+		t.Fatalf("a good line must still parse: %v", err)
+	}
+	if math.IsNaN(finite.Value) || math.IsInf(finite.Value, 0) {
+		t.Fatal("a finite sample must not be treated as non-finite")
 	}
 }

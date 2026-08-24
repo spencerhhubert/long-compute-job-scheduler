@@ -251,6 +251,15 @@ func (s *Store) AnnounceArtifacts(ctx context.Context, commandID string, artifac
 	return tx.Commit()
 }
 
+// SkipMetric advances past a line the worker refuses to send without
+// enqueuing anything, so a job cannot wedge the cycle with one bad value.
+func (s *Store) SkipMetric(ctx context.Context, commandID string, newOffset int64) error {
+	_, err := s.db.ExecContext(ctx,
+		`UPDATE commands SET metric_offset = ?, updated_at = ? WHERE command_id = ?`,
+		newOffset, formatTime(s.now().UTC()), commandID)
+	return err
+}
+
 func (s *Store) EnqueueMetric(ctx context.Context, commandID, attemptID string, sample domain.MetricSample, newOffset int64) error {
 	tx, err := s.db.BeginTx(ctx, nil)
 	if err != nil {
