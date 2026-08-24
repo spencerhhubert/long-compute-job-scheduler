@@ -74,6 +74,22 @@ when their job request uses `sharing: "shared"` and the worker explicitly
 advertises enough `--gpu-shared-slots`. Shared slots are reservations, not
 performance isolation.
 
+## macOS workers
+
+A worker does not have to be Linux; CI builds `lcjs-darwin-arm64` and
+`lcjs-darwin-amd64` alongside the Linux binaries. Three things differ:
+
+- The downloaded binary carries a quarantine attribute and will not execute
+  until it is removed: `xattr -d com.apple.quarantine /path/to/lcjs`.
+- There is no `systemd`. Use a `launchd` LaunchAgent if the worker should
+  survive a reboot; running it under `nohup` gets it up but does not.
+- `timeout(1)` does not exist, so job commands that assume it will fail.
+
+Run the agent with `--gpus 0` unless the machine really can offer one to a
+job. An Apple GPU is not automatically usable by a framework that needs
+float64: Metal has no `double` type at all, so a job whose stack requires it
+must be told to use the CPU through its own configuration.
+
 The service template uses `KillMode=process`: restarting the agent leaves its
 supervisor children running, and the new agent reads their atomic status files.
 To intentionally terminate the entire service cgroup, use an explicit
