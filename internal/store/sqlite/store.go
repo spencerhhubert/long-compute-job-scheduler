@@ -276,24 +276,40 @@ func (s *Store) CancelJob(ctx context.Context, jobID string) (domain.Job, error)
 	if err != nil {
 		return domain.Job{}, err
 	}
-	if job.State == domain.JobCanceled {
+	if job.State == domain.JobCanceled || job.State == domain.JobCanceling {
 		return job, nil
 	}
-	if job.State != domain.JobQueued && job.State != domain.JobRetryWait {
+	if job.State == domain.JobSucceeded || job.State == domain.JobFailed {
 		return domain.Job{}, fmt.Errorf("%w: cannot cancel job in state %s", ErrInvalidTransition, job.State)
+	}
+	// A job with an attempt a worker may still be executing moves to
+	// canceling; every sync then carries a cancel command until the worker
+	// reports the attempt finished, which lands the job in canceled. A job no
+	// worker holds cancels immediately.
+	var liveAttempts int
+	if err := tx.QueryRowContext(ctx, `
+		SELECT COUNT(*) FROM attempts WHERE job_id = ? AND state IN (?, ?, ?)
+	`, job.ID, domain.AttemptOffered, domain.AttemptAccepted, domain.AttemptRunning).Scan(&liveAttempts); err != nil {
+		return domain.Job{}, fmt.Errorf("count live attempts: %w", err)
+	}
+	target := domain.JobCanceled
+	eventKind := "job_canceled"
+	if liveAttempts > 0 {
+		target = domain.JobCanceling
+		eventKind = "job_cancel_requested"
 	}
 	now := s.now().UTC()
 	result, err := tx.ExecContext(ctx, `
 		UPDATE jobs SET state = ?, revision = revision + 1, updated_at = ?
-		WHERE id = ? AND revision = ? AND state IN (?, ?)
-	`, domain.JobCanceled, formatTime(now), job.ID, job.Revision, domain.JobQueued, domain.JobRetryWait)
+		WHERE id = ? AND revision = ? AND state IN (?, ?, ?)
+	`, target, formatTime(now), job.ID, job.Revision, domain.JobQueued, domain.JobRetryWait, domain.JobRunning)
 	if err != nil {
 		return domain.Job{}, fmt.Errorf("cancel job: %w", err)
 	}
 	if changed, err := result.RowsAffected(); err != nil || changed != 1 {
 		return domain.Job{}, fmt.Errorf("%w: job changed while canceling", ErrInvalidTransition)
 	}
-	if err := appendControlEvent(ctx, tx, "job_canceled", job.ID, map[string]any{"job_id": job.ID}, now); err != nil {
+	if err := appendControlEvent(ctx, tx, eventKind, job.ID, map[string]any{"job_id": job.ID}, now); err != nil {
 		return domain.Job{}, fmt.Errorf("record cancellation: %w", err)
 	}
 	if err := tx.Commit(); err != nil {

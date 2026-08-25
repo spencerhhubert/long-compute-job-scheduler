@@ -75,6 +75,24 @@ has run for the complete window and requires at least two samples inside that
 window. The event records the observed delta, sample count, configured rule,
 job, attempt, worker, and evaluation time.
 
+## Attempt finished
+
+This policy notifies the named target once when the attempt reaches a terminal
+state, whatever that state is:
+
+```json
+{
+  "kind": "finished",
+  "action": "notify",
+  "target": "research-session"
+}
+```
+
+It takes no window or metric. The delivery body carries `attempt_state`
+(`succeeded`, `failed`, or `canceled`), `exit_code`, and `job_state` at the
+payload root, so a receiver can distinguish a final failure from one that will
+be retried (`job_state` is `queued` while retries remain).
+
 ## Delivery body
 
 The signed JSON body has stable resource IDs and the complete policy:

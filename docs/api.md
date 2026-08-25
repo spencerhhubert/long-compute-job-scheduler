@@ -92,6 +92,14 @@ Example job submission:
 The stored spec is immutable. Cancel, retry, priority changes, and policy
 overrides are separate commands with audit events.
 
+Cancel is asynchronous when a worker may still be executing an attempt: the
+job moves to `canceling`, every worker sync carries a `cancel_attempt` command
+until the worker reports the attempt finished, and the job then lands in
+`canceled` with no retry regardless of the process exit code. The worker sends
+the process group SIGTERM and escalates to SIGKILL after 30 seconds. A job no
+worker holds cancels immediately. Canceling an already canceled or canceling
+job is a no-op; canceling a succeeded or failed job is an invalid transition.
+
 A job runs in the directory the assigned worker maps to its `project`; only
 workers advertising that project are offered the job. An optional
 `source` object of the form `{"commit": "<full object ID>", "git_url": "..."}`

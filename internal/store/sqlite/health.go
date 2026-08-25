@@ -211,6 +211,25 @@ func (s *Store) metricStalled(ctx context.Context, attemptID string, policy doma
 }
 
 func (s *Store) fireHealthPolicy(ctx context.Context, candidate healthCandidate, policyIndex uint32, policy domain.HealthPolicy, firingKey, reason string, now time.Time) (bool, error) {
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return false, err
+	}
+	defer tx.Rollback()
+	inserted, err := fireHealthPolicyTx(ctx, tx, candidate, policyIndex, policy, firingKey, reason, nil, now)
+	if err != nil {
+		return false, err
+	}
+	if err := tx.Commit(); err != nil {
+		return false, err
+	}
+	return inserted, nil
+}
+
+// fireHealthPolicyTx records one health firing and its webhook delivery inside
+// an existing transaction. The extra map is merged into the payload root for
+// firings that carry more than a reason, such as an attempt's final state.
+func fireHealthPolicyTx(ctx context.Context, tx *sql.Tx, candidate healthCandidate, policyIndex uint32, policy domain.HealthPolicy, firingKey, reason string, extra map[string]any, now time.Time) (bool, error) {
 	firingID, err := id.New("hlf")
 	if err != nil {
 		return false, err
@@ -219,7 +238,7 @@ func (s *Store) fireHealthPolicy(ctx context.Context, candidate healthCandidate,
 	if err != nil {
 		return false, err
 	}
-	payload, err := json.Marshal(map[string]any{
+	body := map[string]any{
 		"event_id": firingID,
 		"kind":     "health_policy_fired",
 		"job": map[string]any{
@@ -232,15 +251,14 @@ func (s *Store) fireHealthPolicy(ctx context.Context, candidate healthCandidate,
 		"policy":       policy,
 		"reason":       reason,
 		"observed_at":  now,
-	})
+	}
+	for name, value := range extra {
+		body[name] = value
+	}
+	payload, err := json.Marshal(body)
 	if err != nil {
 		return false, err
 	}
-	tx, err := s.db.BeginTx(ctx, nil)
-	if err != nil {
-		return false, err
-	}
-	defer tx.Rollback()
 	var targetID string
 	if err := tx.QueryRowContext(ctx, `
 		SELECT id FROM webhook_targets WHERE name = ? AND revoked_at IS NULL
@@ -272,9 +290,6 @@ func (s *Store) fireHealthPolicy(ctx context.Context, candidate healthCandidate,
 	if err := appendControlEvent(ctx, tx, "health_policy_fired", candidate.JobID, map[string]any{
 		"firing_id": firingID, "attempt_id": candidate.AttemptID, "policy_index": policyIndex, "target": policy.Target,
 	}, now); err != nil {
-		return false, err
-	}
-	if err := tx.Commit(); err != nil {
 		return false, err
 	}
 	return true, nil

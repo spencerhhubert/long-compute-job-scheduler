@@ -156,3 +156,15 @@ func TestJobSpecValidateRejectsArtifactPathEscape(t *testing.T) {
 		t.Fatalf("error = %v, want artifact path rejection", err)
 	}
 }
+
+func TestJobSpecValidateFinishedHealthPolicy(t *testing.T) {
+	spec := validSpec()
+	spec.Health = []HealthPolicy{{Kind: HealthKindFinished, Action: HealthActionNotify, Target: "agent-session"}}
+	if err := spec.Validate(); err != nil {
+		t.Fatalf("valid finished policy: %v", err)
+	}
+	spec.Health = []HealthPolicy{{Kind: HealthKindFinished, Window: "10m", Action: HealthActionNotify, Target: "agent-session"}}
+	if err := spec.Validate(); err == nil || !strings.Contains(err.Error(), "finished policy") {
+		t.Fatalf("finished policy with window: %v", err)
+	}
+}

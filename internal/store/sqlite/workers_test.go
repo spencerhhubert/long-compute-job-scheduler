@@ -6,6 +6,7 @@ import (
 	"errors"
 	"io/fs"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
@@ -288,4 +289,222 @@ func TestWorkerSyncNewSessionRestartsEventSequences(t *testing.T) {
 	}
 	run("session-1", "seq-job-1", "one")
 	run("session-2", "seq-job-2", "two")
+}
+
+func TestCancelRunningJobDeliversCancelCommandAndLandsCanceled(t *testing.T) {
+	ctx := context.Background()
+	store, err := Open(ctx, filepath.Join(t.TempDir(), "control.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer store.Close()
+	now := time.Date(2026, time.August, 24, 1, 0, 0, 0, time.UTC)
+	store.now = func() time.Time { return now }
+	credential, err := store.CreateWorker(ctx, "cancel-worker", "lcjw_cancel0123456789abcdef0123456789abcdef012345678", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	spec := testSpec()
+	// Two attempts allowed: cancellation must still not schedule a retry.
+	spec.Retry.MaxAttempts = 2
+	created, err := store.CreateJob(ctx, "cancel-running-job", spec)
+	if err != nil {
+		t.Fatal(err)
+	}
+	request := domain.WorkerSyncRequest{
+		WorkerID: credential.WorkerID, SessionID: "cancel-session", AgentVersion: "test",
+		Capacity: domain.WorkerCapacity{CPU: 4, MaxParallel: 1, Projects: []string{"example-research"}},
+	}
+	offer, err := store.SyncWorker(ctx, credential.WorkerID, request)
+	if err != nil || len(offer.Commands) != 1 {
+		t.Fatalf("offer = %+v, %v", offer, err)
+	}
+	command := offer.Commands[0]
+	request.Events = []domain.WorkerEvent{
+		{Sequence: 1, EventID: "cancel-accepted", AttemptID: command.AttemptID, Kind: domain.WorkerEventAttemptAccepted, OccurredAt: now},
+		{Sequence: 2, EventID: "cancel-started", AttemptID: command.AttemptID, Kind: domain.WorkerEventAttemptStarted, OccurredAt: now},
+	}
+	if _, err := store.SyncWorker(ctx, credential.WorkerID, request); err != nil {
+		t.Fatal(err)
+	}
+	running, err := store.GetJob(ctx, created.Job.ID)
+	if err != nil || running.State != domain.JobRunning {
+		t.Fatalf("job = %+v, %v", running, err)
+	}
+
+	canceling, err := store.CancelJob(ctx, created.Job.ID)
+	if err != nil || canceling.State != domain.JobCanceling {
+		t.Fatalf("cancel = %+v, %v", canceling, err)
+	}
+	repeated, err := store.CancelJob(ctx, created.Job.ID)
+	if err != nil || repeated.State != domain.JobCanceling {
+		t.Fatalf("repeated cancel = %+v, %v", repeated, err)
+	}
+
+	request.Events = nil
+	synced, err := store.SyncWorker(ctx, credential.WorkerID, request)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(synced.Commands) != 1 {
+		t.Fatalf("sync commands = %+v", synced.Commands)
+	}
+	cancel := synced.Commands[0]
+	if cancel.Kind != domain.WorkerCommandCancelAttempt || cancel.AttemptID != command.AttemptID || cancel.CommandID != command.CommandID+"-cancel" {
+		t.Fatalf("cancel command = %+v", cancel)
+	}
+
+	exitCode := -1
+	request.Events = []domain.WorkerEvent{{
+		Sequence: 3, EventID: "cancel-finished", AttemptID: command.AttemptID,
+		Kind: domain.WorkerEventAttemptFinished, OccurredAt: now,
+		ExitCode: &exitCode, Error: "signal: terminated",
+	}}
+	if _, err := store.SyncWorker(ctx, credential.WorkerID, request); err != nil {
+		t.Fatal(err)
+	}
+	detail, err := store.GetJobDetail(ctx, created.Job.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if detail.Job.State != domain.JobCanceled {
+		t.Fatalf("job after cancel = %+v", detail.Job)
+	}
+	if len(detail.Attempts) != 1 || detail.Attempts[0].State != domain.AttemptCanceled {
+		t.Fatalf("attempts = %+v", detail.Attempts)
+	}
+	request.Events = nil
+	after, err := store.SyncWorker(ctx, credential.WorkerID, request)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, remaining := range after.Commands {
+		if remaining.Kind == domain.WorkerCommandCancelAttempt {
+			t.Fatalf("cancel command still delivered after terminal attempt: %+v", remaining)
+		}
+	}
+}
+
+func TestCancelQueuedJobWithOfferedAttemptWaitsForWorker(t *testing.T) {
+	ctx := context.Background()
+	store, err := Open(ctx, filepath.Join(t.TempDir(), "control.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer store.Close()
+	now := time.Date(2026, time.August, 24, 2, 0, 0, 0, time.UTC)
+	store.now = func() time.Time { return now }
+	credential, err := store.CreateWorker(ctx, "offered-worker", "lcjw_offered0123456789abcdef0123456789abcdef01234567", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	created, err := store.CreateJob(ctx, "cancel-offered-job", testSpec())
+	if err != nil {
+		t.Fatal(err)
+	}
+	request := domain.WorkerSyncRequest{
+		WorkerID: credential.WorkerID, SessionID: "offered-session", AgentVersion: "test",
+		Capacity: domain.WorkerCapacity{CPU: 4, MaxParallel: 1, Projects: []string{"example-research"}},
+	}
+	offer, err := store.SyncWorker(ctx, credential.WorkerID, request)
+	if err != nil || len(offer.Commands) != 1 {
+		t.Fatalf("offer = %+v, %v", offer, err)
+	}
+	command := offer.Commands[0]
+
+	// The attempt is offered, so the worker may already hold it: the job must
+	// wait in canceling until the worker reports the attempt finished.
+	canceling, err := store.CancelJob(ctx, created.Job.ID)
+	if err != nil || canceling.State != domain.JobCanceling {
+		t.Fatalf("cancel = %+v, %v", canceling, err)
+	}
+	synced, err := store.SyncWorker(ctx, credential.WorkerID, request)
+	if err != nil {
+		t.Fatal(err)
+	}
+	sawCancel := false
+	for _, delivered := range synced.Commands {
+		if delivered.Kind == domain.WorkerCommandCancelAttempt && delivered.AttemptID == command.AttemptID {
+			sawCancel = true
+		}
+	}
+	if !sawCancel {
+		t.Fatalf("no cancel command for offered attempt: %+v", synced.Commands)
+	}
+	exitCode := -1
+	request.Events = []domain.WorkerEvent{
+		{Sequence: 1, EventID: "offered-accepted", AttemptID: command.AttemptID, Kind: domain.WorkerEventAttemptAccepted, OccurredAt: now},
+		{Sequence: 2, EventID: "offered-finished", AttemptID: command.AttemptID, Kind: domain.WorkerEventAttemptFinished, OccurredAt: now, ExitCode: &exitCode, Error: "canceled before start"},
+	}
+	if _, err := store.SyncWorker(ctx, credential.WorkerID, request); err != nil {
+		t.Fatal(err)
+	}
+	final, err := store.GetJob(ctx, created.Job.ID)
+	if err != nil || final.State != domain.JobCanceled {
+		t.Fatalf("final job = %+v, %v", final, err)
+	}
+}
+
+func TestFinishedHealthPolicyFiresWebhookOnAttemptFinished(t *testing.T) {
+	ctx := context.Background()
+	store, err := Open(ctx, filepath.Join(t.TempDir(), "control.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer store.Close()
+	now := time.Date(2026, time.August, 24, 3, 0, 0, 0, time.UTC)
+	store.now = func() time.Time { return now }
+	const secret = "lcjh_finished9abcdef0123456789abcdef0123456789abc"
+	if _, err := store.CreateWebhookTarget(ctx, "agent-session", "http://127.0.0.1/lcjs", secret); err != nil {
+		t.Fatal(err)
+	}
+	spec := testSpec()
+	spec.Health = []domain.HealthPolicy{{Kind: domain.HealthKindFinished, Action: domain.HealthActionNotify, Target: "agent-session"}}
+	created, err := store.CreateJob(ctx, "finished-hook-job", spec)
+	if err != nil {
+		t.Fatal(err)
+	}
+	credential, err := store.CreateWorker(ctx, "finished-worker", "lcjw_finished123456789abcdef0123456789abcdef0123456", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	request := domain.WorkerSyncRequest{
+		WorkerID: credential.WorkerID, SessionID: "finished-session", AgentVersion: "test",
+		Capacity: domain.WorkerCapacity{CPU: 4, MaxParallel: 1, Projects: []string{"example-research"}},
+	}
+	offer, err := store.SyncWorker(ctx, credential.WorkerID, request)
+	if err != nil || len(offer.Commands) != 1 {
+		t.Fatalf("offer = %+v, %v", offer, err)
+	}
+	command := offer.Commands[0]
+	exitCode := 0
+	request.Events = []domain.WorkerEvent{
+		{Sequence: 1, EventID: "finished-accepted", AttemptID: command.AttemptID, Kind: domain.WorkerEventAttemptAccepted, OccurredAt: now},
+		{Sequence: 2, EventID: "finished-started", AttemptID: command.AttemptID, Kind: domain.WorkerEventAttemptStarted, OccurredAt: now},
+		{Sequence: 3, EventID: "finished-finished", AttemptID: command.AttemptID, Kind: domain.WorkerEventAttemptFinished, OccurredAt: now, ExitCode: &exitCode},
+	}
+	if _, err := store.SyncWorker(ctx, credential.WorkerID, request); err != nil {
+		t.Fatal(err)
+	}
+	deliveries, err := store.DueWebhookDeliveries(ctx, 20)
+	if err != nil || len(deliveries) != 1 {
+		t.Fatalf("deliveries = %+v, %v", deliveries, err)
+	}
+	payload := string(deliveries[0].Payload)
+	for _, want := range []string{created.Job.ID, `"attempt_state":"succeeded"`, `"exit_code":0`, `"finished"`} {
+		if !strings.Contains(payload, want) {
+			t.Fatalf("payload %s does not contain %s", payload, want)
+		}
+	}
+	// Replaying the same worker event must not create a second firing.
+	if _, err := store.SyncWorker(ctx, credential.WorkerID, request); err != nil {
+		t.Fatal(err)
+	}
+	var firings int
+	if err := store.db.QueryRowContext(ctx, "SELECT COUNT(*) FROM health_firings").Scan(&firings); err != nil {
+		t.Fatal(err)
+	}
+	if firings != 1 {
+		t.Fatalf("firings = %d, want 1", firings)
+	}
 }

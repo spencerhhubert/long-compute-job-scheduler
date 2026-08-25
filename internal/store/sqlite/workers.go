@@ -7,6 +7,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"log/slog"
 	"math"
 	"slices"
 	"strings"
@@ -118,6 +119,11 @@ func (s *Store) SyncWorker(ctx context.Context, workerID string, request domain.
 	if err != nil {
 		return domain.WorkerSyncResponse{}, err
 	}
+	cancels, err := cancelCommands(ctx, tx, workerID)
+	if err != nil {
+		return domain.WorkerSyncResponse{}, err
+	}
+	commands = append(commands, cancels...)
 	var acceptedThrough uint64
 	if err := tx.QueryRowContext(ctx, `SELECT COALESCE(MAX(sequence), 0) FROM worker_events WHERE worker_id = ? AND session_id = ?`, workerID, request.SessionID).Scan(&acceptedThrough); err != nil {
 		return domain.WorkerSyncResponse{}, fmt.Errorf("read worker acknowledgement: %w", err)
@@ -166,13 +172,14 @@ func recordWorkerEvent(ctx context.Context, tx *sql.Tx, workerID, sessionID stri
 func applyWorkerEvent(ctx context.Context, tx *sql.Tx, workerID string, event domain.WorkerEvent, recordedAt time.Time) error {
 	var state domain.AttemptState
 	var jobID string
+	var jobState domain.JobState
 	var attemptNumber uint32
 	var specJSON []byte
 	if err := tx.QueryRowContext(ctx, `
-		SELECT a.state, a.job_id, a.attempt_number, j.spec_json
+		SELECT a.state, a.job_id, j.state, a.attempt_number, j.spec_json
 		FROM attempts AS a JOIN jobs AS j ON j.id = a.job_id
 		WHERE a.id = ? AND a.worker_id = ?
-	`, event.AttemptID, workerID).Scan(&state, &jobID, &attemptNumber, &specJSON); err != nil {
+	`, event.AttemptID, workerID).Scan(&state, &jobID, &jobState, &attemptNumber, &specJSON); err != nil {
 		if errors.Is(err, sql.ErrNoRows) {
 			return fmt.Errorf("event references an attempt not assigned to this worker")
 		}
@@ -221,19 +228,24 @@ func applyWorkerEvent(ctx context.Context, tx *sql.Tx, workerID string, event do
 			return errors.New("attempt log tail exceeds 64 KiB")
 		}
 		attemptState := domain.AttemptFailed
-		jobState := domain.JobFailed
-		if exitCode == 0 && event.Error == "" {
+		nextJobState := domain.JobFailed
+		if jobState == domain.JobCanceling || jobState == domain.JobCanceled {
+			// The operator asked for this job to stop; however the process
+			// ended, the attempt is canceled and no retry is scheduled.
+			attemptState = domain.AttemptCanceled
+			nextJobState = domain.JobCanceled
+		} else if exitCode == 0 && event.Error == "" {
 			attemptState = domain.AttemptSucceeded
-			jobState = domain.JobSucceeded
+			nextJobState = domain.JobSucceeded
 		} else if attemptNumber < spec.Retry.MaxAttempts {
-			jobState = domain.JobQueued
+			nextJobState = domain.JobQueued
 		}
 		if _, err := tx.ExecContext(ctx, `
 			UPDATE attempts SET state = ?, revision = revision + 1, finished_at = ?, exit_code = ?, error = ?, log_uri = ?, log_tail = ? WHERE id = ?
 		`, attemptState, formatTime(event.OccurredAt), exitCode, event.Error, event.LogURI, event.LogTail, event.AttemptID); err != nil {
 			return fmt.Errorf("finish attempt: %w", err)
 		}
-		if _, err := tx.ExecContext(ctx, `UPDATE jobs SET state = ?, revision = revision + 1, updated_at = ? WHERE id = ?`, jobState, formatTime(recordedAt), jobID); err != nil {
+		if _, err := tx.ExecContext(ctx, `UPDATE jobs SET state = ?, revision = revision + 1, updated_at = ? WHERE id = ?`, nextJobState, formatTime(recordedAt), jobID); err != nil {
 			return fmt.Errorf("finish job: %w", err)
 		}
 		for _, artifact := range event.Artifacts {
@@ -254,6 +266,20 @@ func applyWorkerEvent(ctx context.Context, tx *sql.Tx, workerID string, event do
 					created_at = excluded.created_at
 			`, event.AttemptID, artifact.Name, artifact.URI, artifact.SizeBytes, artifact.SHA256, content, formatTime(recordedAt)); err != nil {
 				return fmt.Errorf("record artifact: %w", err)
+			}
+		}
+		for index, policy := range spec.Health {
+			if policy.Kind != domain.HealthKindFinished {
+				continue
+			}
+			candidate := healthCandidate{JobID: jobID, AttemptID: event.AttemptID, AttemptNumber: attemptNumber, WorkerID: workerID, Spec: spec}
+			reason := fmt.Sprintf("attempt finished as %s (exit code %d)", attemptState, exitCode)
+			extra := map[string]any{"attempt_state": attemptState, "exit_code": exitCode, "job_state": nextJobState}
+			// A misconfigured target must not wedge event application: the
+			// event's sequence is already recorded, so failing here would
+			// repeat the whole sync forever.
+			if _, err := fireHealthPolicyTx(ctx, tx, candidate, uint32(index), policy, "finished", reason, extra, recordedAt); err != nil {
+				slog.Warn("could not fire finished health policy", "job", jobID, "attempt", event.AttemptID, "error", err)
 			}
 		}
 		return appendControlEvent(ctx, tx, "attempt_finished", jobID, map[string]any{"attempt_id": event.AttemptID, "worker_id": workerID, "state": attemptState, "exit_code": exitCode}, recordedAt)
@@ -529,8 +555,39 @@ func offeredCommands(ctx context.Context, tx *sql.Tx, workerID string) ([]domain
 		if job.UpdatedAt, err = time.Parse(time.RFC3339Nano, updated); err != nil {
 			return nil, err
 		}
-		command.Kind = "run_job"
+		command.Kind = domain.WorkerCommandRunJob
 		command.Job = job
+		commands = append(commands, command)
+	}
+	return commands, rows.Err()
+}
+
+// cancelCommands lists cancel commands for attempts this worker holds on jobs
+// whose desired state is canceled. The command ID is derived from the run
+// command's ID, so repeating a sync repeats the same command; the worker's
+// handling is idempotent and the command stops being sent once the attempt
+// reaches a terminal state.
+func cancelCommands(ctx context.Context, tx *sql.Tx, workerID string) ([]domain.WorkerCommand, error) {
+	rows, err := tx.QueryContext(ctx, `
+		SELECT a.command_id, a.id, a.attempt_number
+		FROM attempts AS a JOIN jobs AS j ON j.id = a.job_id
+		WHERE a.worker_id = ? AND a.state IN (?, ?, ?) AND j.state IN (?, ?)
+		ORDER BY a.offered_at, a.id
+	`, workerID, domain.AttemptOffered, domain.AttemptAccepted, domain.AttemptRunning,
+		domain.JobCanceling, domain.JobCanceled)
+	if err != nil {
+		return nil, fmt.Errorf("list cancel commands: %w", err)
+	}
+	defer rows.Close()
+	commands := make([]domain.WorkerCommand, 0)
+	for rows.Next() {
+		var command domain.WorkerCommand
+		var runCommandID string
+		if err := rows.Scan(&runCommandID, &command.AttemptID, &command.AttemptNumber); err != nil {
+			return nil, err
+		}
+		command.CommandID = runCommandID + "-cancel"
+		command.Kind = domain.WorkerCommandCancelAttempt
 		commands = append(commands, command)
 	}
 	return commands, rows.Err()

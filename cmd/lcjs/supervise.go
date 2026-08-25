@@ -7,7 +7,9 @@ import (
 	"fmt"
 	"os"
 	"os/exec"
+	"os/signal"
 	"strconv"
+	"syscall"
 	"time"
 
 	workeragent "github.com/spencerhhubert/long-compute-job-scheduler/internal/worker"
@@ -29,7 +31,23 @@ func runSupervise(arguments []string) error {
 	process.Stderr = os.Stderr
 	process.Env = os.Environ()
 	status := workeragent.RunStatus{ExitCode: -1, FinishedAt: time.Now().UTC()}
-	err := process.Run()
+	if err := process.Start(); err != nil {
+		status.Error = err.Error()
+		return writeStatus(*statusPath, status)
+	}
+	// A canceled attempt is terminated by signaling the whole process group,
+	// which includes this supervisor. Forwarding the signal to the job and
+	// staying alive lets the exit status still be recorded; only SIGKILL loses
+	// it.
+	signals := make(chan os.Signal, 4)
+	signal.Notify(signals, syscall.SIGTERM, syscall.SIGINT)
+	go func() {
+		for received := range signals {
+			_ = process.Process.Signal(received)
+		}
+	}()
+	err := process.Wait()
+	signal.Stop(signals)
 	status.FinishedAt = time.Now().UTC()
 	if err == nil {
 		status.ExitCode = 0

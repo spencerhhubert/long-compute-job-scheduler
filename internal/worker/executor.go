@@ -185,7 +185,20 @@ func jobEnvironment(job domain.Job, command domain.WorkerCommand, metricsPath, a
 	return environment
 }
 
+// cancelGrace is how long a canceled attempt's process group gets to exit
+// after SIGTERM before the worker escalates to SIGKILL.
+const cancelGrace = 30 * time.Second
+
 func (a *Agent) reconcileRunning(ctx context.Context) error {
+	canceledBeforeLaunch, err := a.store.PendingCanceledCommands(ctx)
+	if err != nil {
+		return err
+	}
+	for _, command := range canceledBeforeLaunch {
+		if err := a.store.MarkFinished(ctx, command.Command.CommandID, -1, "canceled before start", "", "", nil); err != nil {
+			return err
+		}
+	}
 	commands, err := a.store.RunningCommands(ctx)
 	if err != nil {
 		return err
@@ -200,6 +213,10 @@ func (a *Agent) reconcileRunning(ctx context.Context) error {
 		}
 		if !found {
 			if command.PID > 0 && processAlive(command.PID) {
+				if !command.CancelRequestedAt.IsZero() {
+					a.signalCancel(command)
+					continue
+				}
 				a.ensureSampler(command)
 				a.announceProgress(ctx, command)
 				continue
@@ -222,6 +239,21 @@ func (a *Agent) reconcileRunning(ctx context.Context) error {
 		}
 	}
 	return nil
+}
+
+// signalCancel terminates a canceled attempt's process group: SIGTERM each
+// cycle until it exits, SIGKILL once the grace period has passed. The
+// supervisor forwards SIGTERM to the job and still records its exit status;
+// after SIGKILL the missing status file is reported as a lost supervisor,
+// which the control plane records as canceled all the same.
+func (a *Agent) signalCancel(command StoredCommand) {
+	signal := syscall.SIGTERM
+	if time.Since(command.CancelRequestedAt) > cancelGrace {
+		signal = syscall.SIGKILL
+	}
+	if err := syscall.Kill(-command.PID, signal); err != nil {
+		slog.Warn("could not signal canceled attempt", "attempt", command.Command.AttemptID, "pid", command.PID, "signal", signal, "error", err)
+	}
 }
 
 // announceProgress publishes whatever the run has written so far, at most

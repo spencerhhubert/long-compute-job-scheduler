@@ -7,8 +7,10 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"log/slog"
 	"os"
 	"path/filepath"
+	"strings"
 	"time"
 
 	"github.com/spencerhhubert/long-compute-job-scheduler/internal/domain"
@@ -29,6 +31,9 @@ type StoredCommand struct {
 	StatusPath   string
 	MetricsPath  string
 	MetricOffset int64
+	// CancelRequestedAt is zero until the control plane asks for this attempt
+	// to stop. It times the escalation from SIGTERM to SIGKILL.
+	CancelRequestedAt time.Time
 }
 
 func OpenStore(ctx context.Context, path string) (*Store, error) {
@@ -85,6 +90,11 @@ func (s *Store) initialize(ctx context.Context) error {
 			return fmt.Errorf("initialize worker store: %w", err)
 		}
 	}
+	// The worker store predates cancellation; add the column to existing
+	// databases and ignore the error once it is present.
+	if _, err := s.db.ExecContext(ctx, `ALTER TABLE commands ADD COLUMN cancel_requested_at TEXT NOT NULL DEFAULT ''`); err != nil && !strings.Contains(err.Error(), "duplicate column name") {
+		return fmt.Errorf("add cancel_requested_at column: %w", err)
+	}
 	return nil
 }
 
@@ -99,11 +109,30 @@ func (s *Store) AcceptCommands(ctx context.Context, commands []domain.WorkerComm
 	}
 	defer tx.Rollback()
 	for _, command := range commands {
+		now := s.now().UTC()
+		switch command.Kind {
+		case domain.WorkerCommandRunJob:
+		case domain.WorkerCommandCancelAttempt:
+			// Mark the run command this cancel refers to; the executor stops
+			// the attempt. Repeats and cancels for attempts already finished
+			// or never held are no-ops.
+			if _, err := tx.ExecContext(ctx, `
+				UPDATE commands SET cancel_requested_at = ?, updated_at = ?
+				WHERE attempt_id = ? AND state IN ('pending', 'running') AND cancel_requested_at = ''
+			`, formatTime(now), formatTime(now), command.AttemptID); err != nil {
+				return fmt.Errorf("record cancel request: %w", err)
+			}
+			continue
+		default:
+			// A newer control plane may send kinds this worker does not know;
+			// skipping them keeps the sync loop alive.
+			slog.Warn("ignoring unknown worker command kind", "kind", command.Kind, "command_id", command.CommandID)
+			continue
+		}
 		encoded, err := json.Marshal(command)
 		if err != nil {
 			return fmt.Errorf("encode worker command: %w", err)
 		}
-		now := s.now().UTC()
 		result, err := tx.ExecContext(ctx, `
 			INSERT OR IGNORE INTO commands(command_id, attempt_id, command_json, state, created_at, updated_at)
 			VALUES (?, ?, ?, 'pending', ?, ?)
@@ -137,35 +166,50 @@ func (s *Store) AcceptCommands(ctx context.Context, commands []domain.WorkerComm
 	return nil
 }
 
+// PendingCommands lists commands ready to launch; a pending command whose
+// cancellation was requested is never launched and is finished by
+// reconcileRunning instead.
 func (s *Store) PendingCommands(ctx context.Context, limit int) ([]StoredCommand, error) {
-	return s.commandsByState(ctx, "pending", limit)
+	return s.listCommands(ctx, `state = 'pending' AND cancel_requested_at = ''`, limit)
+}
+
+func (s *Store) PendingCanceledCommands(ctx context.Context) ([]StoredCommand, error) {
+	return s.listCommands(ctx, `state = 'pending' AND cancel_requested_at != ''`, 1000)
 }
 
 func (s *Store) RunningCommands(ctx context.Context) ([]StoredCommand, error) {
-	return s.commandsByState(ctx, "running", 1000)
+	return s.listCommands(ctx, `state = 'running'`, 1000)
 }
 
-func (s *Store) commandsByState(ctx context.Context, state string, limit int) ([]StoredCommand, error) {
+func (s *Store) listCommands(ctx context.Context, where string, limit int) ([]StoredCommand, error) {
 	if limit <= 0 {
 		limit = 100
 	}
 	rows, err := s.db.QueryContext(ctx, `
-		SELECT command_json, state, pid, work_dir, status_path, metrics_path, metric_offset
-		FROM commands WHERE state = ? ORDER BY created_at, command_id LIMIT ?
-	`, state, limit)
+		SELECT command_json, state, pid, work_dir, status_path, metrics_path, metric_offset, cancel_requested_at
+		FROM commands WHERE `+where+` ORDER BY created_at, command_id LIMIT ?
+	`, limit)
 	if err != nil {
-		return nil, fmt.Errorf("list %s commands: %w", state, err)
+		return nil, fmt.Errorf("list commands where %s: %w", where, err)
 	}
 	defer rows.Close()
 	commands := make([]StoredCommand, 0)
 	for rows.Next() {
 		var command StoredCommand
 		var encoded []byte
-		if err := rows.Scan(&encoded, &command.State, &command.PID, &command.WorkDir, &command.StatusPath, &command.MetricsPath, &command.MetricOffset); err != nil {
+		var cancelRequested string
+		if err := rows.Scan(&encoded, &command.State, &command.PID, &command.WorkDir, &command.StatusPath, &command.MetricsPath, &command.MetricOffset, &cancelRequested); err != nil {
 			return nil, err
 		}
 		if err := json.Unmarshal(encoded, &command.Command); err != nil {
 			return nil, fmt.Errorf("decode stored command: %w", err)
+		}
+		if cancelRequested != "" {
+			parsed, err := time.Parse(time.RFC3339Nano, cancelRequested)
+			if err != nil {
+				return nil, fmt.Errorf("parse cancel request time: %w", err)
+			}
+			command.CancelRequestedAt = parsed
 		}
 		commands = append(commands, command)
 	}
@@ -206,12 +250,14 @@ func (s *Store) MarkFinished(ctx context.Context, commandID string, exitCode int
 	}
 	defer tx.Rollback()
 	now := s.now().UTC()
-	result, err := tx.ExecContext(ctx, `UPDATE commands SET state = 'finished', updated_at = ? WHERE command_id = ? AND state = 'running'`, formatTime(now), commandID)
+	// A running command finishes when its process ends; a pending one
+	// finishes directly only when it was canceled before launch.
+	result, err := tx.ExecContext(ctx, `UPDATE commands SET state = 'finished', updated_at = ? WHERE command_id = ? AND state IN ('running', 'pending')`, formatTime(now), commandID)
 	if err != nil {
 		return fmt.Errorf("mark command finished: %w", err)
 	}
 	if changed, _ := result.RowsAffected(); changed != 1 {
-		return fmt.Errorf("command %s is not running", commandID)
+		return fmt.Errorf("command %s is not running or pending", commandID)
 	}
 	var attemptID string
 	if err := tx.QueryRowContext(ctx, `SELECT attempt_id FROM commands WHERE command_id = ?`, commandID).Scan(&attemptID); err != nil {

@@ -521,7 +521,7 @@ td small.wide { max-width: 520px; }
 .numeric { text-align: right; font-variant-numeric: tabular-nums; }
 .state { display: inline-block; padding: 1px 6px; border: 1px solid var(--border-strong); border-radius: 10px; font-size: 10px; font-weight: 700; }
 .state[data-state="running"], .state[data-state="succeeded"], .state[data-state="online"], .state[data-state="delivered"] { border-color: var(--success); background: var(--success-bg); color: var(--success); }
-.state[data-state="failed"], .state[data-state="canceled"], .state[data-state="offline"], .state[data-state="dead"] { border-color: var(--danger); background: var(--danger-bg); color: var(--danger); }
+.state[data-state="failed"], .state[data-state="canceled"], .state[data-state="canceling"], .state[data-state="offline"], .state[data-state="dead"] { border-color: var(--danger); background: var(--danger-bg); color: var(--danger); }
 .empty { height: 72px; color: var(--muted); text-align: center; vertical-align: middle; }
 .empty-block { display: flex; flex-direction: column; align-items: center; justify-content: center; min-height: 76px; padding: 14px; color: var(--muted); }
 .empty-block strong { color: var(--text); }

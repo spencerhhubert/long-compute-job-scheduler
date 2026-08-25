@@ -83,3 +83,55 @@ func TestStorePersistsCommandsAndOutboxAcrossRestart(t *testing.T) {
 		t.Fatalf("running after finish = %+v, %v", commands, err)
 	}
 }
+
+func TestCancelCommandMarksPendingAndRunningWithoutLaunching(t *testing.T) {
+	ctx := context.Background()
+	store, err := OpenStore(ctx, filepath.Join(t.TempDir(), "worker.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer store.Close()
+	now := time.Date(2026, time.August, 24, 4, 0, 0, 0, time.UTC)
+	store.now = func() time.Time { return now }
+	run := domain.WorkerCommand{
+		CommandID: "command-1", AttemptID: "attempt-1", AttemptNumber: 1, Kind: domain.WorkerCommandRunJob,
+		Job: domain.Job{ID: "job-1", Spec: domain.JobSpec{Project: "project", Name: "job"}},
+	}
+	cancel := domain.WorkerCommand{CommandID: "command-1-cancel", AttemptID: "attempt-1", Kind: domain.WorkerCommandCancelAttempt}
+	unknown := domain.WorkerCommand{CommandID: "command-x", AttemptID: "attempt-x", Kind: "reboot_worker"}
+	if err := store.AcceptCommands(ctx, []domain.WorkerCommand{run, cancel, cancel, unknown}); err != nil {
+		t.Fatal(err)
+	}
+	if pending, err := store.PendingCommands(ctx, 10); err != nil || len(pending) != 0 {
+		t.Fatalf("pending after cancel = %+v, %v", pending, err)
+	}
+	canceled, err := store.PendingCanceledCommands(ctx)
+	if err != nil || len(canceled) != 1 || canceled[0].CancelRequestedAt.IsZero() {
+		t.Fatalf("pending canceled = %+v, %v", canceled, err)
+	}
+	// A pending command canceled before launch finishes directly.
+	if err := store.MarkFinished(ctx, run.CommandID, -1, "canceled before start", "", "", nil); err != nil {
+		t.Fatal(err)
+	}
+	if canceled, err := store.PendingCanceledCommands(ctx); err != nil || len(canceled) != 0 {
+		t.Fatalf("pending canceled after finish = %+v, %v", canceled, err)
+	}
+	// A cancel for a running command marks it without changing its state.
+	second := domain.WorkerCommand{
+		CommandID: "command-2", AttemptID: "attempt-2", AttemptNumber: 1, Kind: domain.WorkerCommandRunJob,
+		Job: domain.Job{ID: "job-2", Spec: domain.JobSpec{Project: "project", Name: "job"}},
+	}
+	if err := store.AcceptCommands(ctx, []domain.WorkerCommand{second}); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.MarkStarted(ctx, second.CommandID, 456, "/work", "/status", "/metrics", nil); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.AcceptCommands(ctx, []domain.WorkerCommand{{CommandID: "command-2-cancel", AttemptID: "attempt-2", Kind: domain.WorkerCommandCancelAttempt}}); err != nil {
+		t.Fatal(err)
+	}
+	running, err := store.RunningCommands(ctx)
+	if err != nil || len(running) != 1 || running[0].CancelRequestedAt.IsZero() {
+		t.Fatalf("running after cancel = %+v, %v", running, err)
+	}
+}

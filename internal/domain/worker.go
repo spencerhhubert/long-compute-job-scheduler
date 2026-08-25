@@ -43,6 +43,19 @@ type Worker struct {
 	CreatedAt    time.Time      `json:"created_at"`
 }
 
+type WorkerCommandKind string
+
+const (
+	// WorkerCommandRunJob offers an attempt to a worker.
+	WorkerCommandRunJob WorkerCommandKind = "run_job"
+	// WorkerCommandCancelAttempt tells the worker to stop an attempt it holds:
+	// a pending command is finished without launching, a running one has its
+	// process group terminated. The control plane repeats the command every
+	// sync until the attempt reaches a terminal state, so handling it must be
+	// idempotent.
+	WorkerCommandCancelAttempt WorkerCommandKind = "cancel_attempt"
+)
+
 type WorkerEventKind string
 
 const (
@@ -177,10 +190,13 @@ type WorkerSyncRequest struct {
 }
 
 type WorkerCommand struct {
-	CommandID      string    `json:"command_id"`
-	AttemptID      string    `json:"attempt_id"`
-	AttemptNumber  uint32    `json:"attempt_number"`
-	Kind           string    `json:"kind"`
+	CommandID     string            `json:"command_id"`
+	AttemptID     string            `json:"attempt_id"`
+	AttemptNumber uint32            `json:"attempt_number"`
+	Kind          WorkerCommandKind `json:"kind"`
+	// Job carries the full spec for run_job commands and is zero for
+	// cancel_attempt commands, which reference an attempt the worker already
+	// holds.
 	Job            Job       `json:"job"`
 	LeaseExpiresAt time.Time `json:"lease_expires_at"`
 }

@@ -93,6 +93,7 @@ type HealthPolicy struct {
 const (
 	HealthKindMetricStalled = "metric_stalled"
 	HealthKindPeriodic      = "periodic"
+	HealthKindFinished      = "finished"
 	HealthModeMax           = "max"
 	HealthModeMin           = "min"
 	HealthActionNotify      = "notify"
@@ -338,18 +339,21 @@ func (spec JobSpec) Validate() error {
 	}
 	for i, policy := range spec.Health {
 		path := fmt.Sprintf("health[%d]", i)
-		window, err := time.ParseDuration(policy.Window)
-		if err != nil || window < 10*time.Second || window > 30*24*time.Hour {
-			errs = append(errs, fmt.Errorf("%s.window must be a duration from 10s through 720h", path))
-		}
 		if policy.Action != HealthActionNotify {
 			errs = append(errs, fmt.Errorf("%s.action must currently be %q", path, HealthActionNotify))
 		}
 		if !slugPattern.MatchString(policy.Target) {
 			errs = append(errs, fmt.Errorf("%s.target must be a configured target slug", path))
 		}
+		requireWindow := func() {
+			window, err := time.ParseDuration(policy.Window)
+			if err != nil || window < 10*time.Second || window > 30*24*time.Hour {
+				errs = append(errs, fmt.Errorf("%s.window must be a duration from 10s through 720h", path))
+			}
+		}
 		switch policy.Kind {
 		case HealthKindMetricStalled:
+			requireWindow()
 			if _, exists := metricNames[policy.Metric]; !exists {
 				errs = append(errs, fmt.Errorf("%s.metric must name a declared metric", path))
 			}
@@ -360,11 +364,16 @@ func (spec JobSpec) Validate() error {
 				errs = append(errs, fmt.Errorf("%s.minimum_delta must be a non-negative finite number", path))
 			}
 		case HealthKindPeriodic:
+			requireWindow()
 			if policy.Metric != "" || policy.Mode != "" || policy.MinimumDelta != 0 {
 				errs = append(errs, fmt.Errorf("%s periodic policy may contain only kind, window, action, and target", path))
 			}
+		case HealthKindFinished:
+			if policy.Window != "" || policy.Metric != "" || policy.Mode != "" || policy.MinimumDelta != 0 {
+				errs = append(errs, fmt.Errorf("%s finished policy may contain only kind, action, and target", path))
+			}
 		default:
-			errs = append(errs, fmt.Errorf("%s.kind must be %q or %q", path, HealthKindMetricStalled, HealthKindPeriodic))
+			errs = append(errs, fmt.Errorf("%s.kind must be %q, %q, or %q", path, HealthKindMetricStalled, HealthKindPeriodic, HealthKindFinished))
 		}
 	}
 
